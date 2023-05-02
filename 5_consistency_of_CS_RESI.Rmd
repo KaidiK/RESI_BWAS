@@ -1,0 +1,321 @@
+---
+title: "5. Consistency of CS-RESI"
+author: "Kaidi Kang"
+date: "2023-04-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+setwd("~/RESI/longitudinal/data_analysis")
+study_info_clean <- readr::read_csv("data/analysis_data/study_info_clean.csv")
+source("Code/functions/resi_geeglm.R")
+```
+
+
+# Consistency of CS RESI
+
+```{r, eval = FALSE}
+Sys.time()
+set.seed(1213)
+
+study_names = subset(study_info_clean, Design == "Longitudinal")$study
+
+# num of resampling 
+nboot = 1000
+num.cores = 45
+
+# bootstrapping function
+consis_func = function(study_name, size){
+  
+  # study data
+  dat = subset(analysis_data, study == study_name)
+  
+  # 1. Longitudinal
+  # subject IDs 
+  uniq_ID = dat$participant %>% unique()
+  # resampling
+  samp_id = sample(uniq_ID, size = size, replace = TRUE)
+  boot_data = dat[unlist(lapply(samp_id, function(x) which(x == dat[, "participant"]))), ]
+  # assign new id
+  # boot_data %<>% group_by(participant) %>% mutate(new_id = cur_group_id()) # this is wrong!
+  boot_data$new_id = rep(1:length(samp_id),
+                           times = unlist(lapply(samp_id, function(x) length(which(x==dat[,"participant"]))))
+                         )
+
+  # sorting the data by id and age
+  boot_data = boot_data[order(boot_data$new_id, boot_data$age_years), ]
+  
+  # for sex effect (the ANOVA here for L-RESI is the Type 1 sequential ANOVA)
+  boot_fit_long_sex = geeglm(GMV_10000_combat ~ ns(age_years, df = 2) + sex, data = boot_data, id = new_id, corstr = "exchangeable")
+  boot_resi_long_sex = boot_fit_long_sex %>% resi_pe_geeglm(data = boot_data)
+  # for age effect (the ANOVA here for L-RESI is the Type 1 sequential ANOVA)
+  boot_fit_long_age = geeglm(GMV_10000_combat ~ sex + ns(age_years, df = 2), data = boot_data, id = new_id, corstr = "exchangeable")
+  boot_resi_long_age = boot_fit_long_age %>% resi_pe_geeglm(data = boot_data)
+  
+  # 2. Cross-sectional
+  # randomly select one obs from each subject
+  boot_data_cs = boot_data %>% group_by(new_id) %>% slice_sample(n = 1)
+  boot_fit_cs = lm(GMV_10000_combat ~ ns(age_years, df = 2) + sex, data = boot_data_cs)
+  ## The ANOVA here is type 2 anova
+  boot_resi_cs = boot_fit_cs %>% RESI::resi_pe()
+  
+  # 3. Calculating Effect Sizes....
+  rv = NULL # return values
+  
+  # CS RESI for age (in longitudinal)
+  rv["CS_RESI_age"] = boot_resi_long_age$anova["ns(age_years, df = 2)", "CS-RESI"]
+  rv["L_RESI_age"] = boot_resi_long_age$anova["ns(age_years, df = 2)", "L-RESI"]
+  # regular RESI for age (in cross-sectional)
+  rv["cs_RESI_age"] = boot_resi_cs$anova["ns(age_years, df = 2)", "RESI"]
+
+  
+  # CS-RESI & L-RESI for sex (in longitudinal)
+  rv["CS_RESI_sex"] = boot_resi_long_sex$anova["sex", "CS-RESI"]
+  rv["L_RESI_sex"] = boot_resi_long_sex$anova["sex", "L-RESI"]
+  # regular RESI for sex (in cross-sectional)
+  rv["cs_RESI_sex"] = boot_resi_cs$anova["sex", "RESI"]
+  
+  # Cohen's d for sex in longitudinal
+  rv["d_sex_long"] = coef(boot_fit_long_sex)["sexMale"] / sqrt(vcov(boot_fit_long_sex)["sexMale", "sexMale"]) / sqrt(size)
+    # z_to_d(sign(coef(boot_fit_long)["sexMale"]) * sqrt(boot_resi_long$resi["sex", "X2"]), n = size)[1, "d"]
+  # Cohen's d for sex in cs
+  rv["d_sex_cs"] = coef(boot_fit_cs)["sexMale"] / sqrt(vcov(boot_fit_cs)["sexMale", "sexMale"]) / sqrt(size)
+    # F_to_d(sign(coef(boot_fit_cs)["sexMale"]) * boot_resi_cs$anova["sex", "F"],
+    #                                 df = 1,
+    #                                 df_error = boot_resi_cs$overall$Res.Df[2])[1, "d"]
+  # statistics for age in long study
+  rv["stat_age_long"] = boot_resi_long_age$anova["ns(age_years, df = 2)", "X2"]
+  # statistics for age in CS study
+  rv["stat_age_cs"] = boot_resi_cs$anova["ns(age_years, df = 2)", "F"]
+
+  # stat for sex in long study
+  rv["stat_sex_long"] = boot_resi_long_sex$anova["sex", "X2"]
+  # stat for sex in cs study
+  rv["stat_sex_cs"] = boot_resi_cs$anova["sex", "F"]
+  return(rv)
+} # end of function `consis_fun`
+```
+
+
+```{r, eval = FALSE}
+for (study_name in study_names) {
+  print(study_name)
+  
+  # resample sizes
+  maxN = ifelse(study_info_clean$N[study_info_clean$study == study_name] < 2000, 2000, study_info_clean$N[study_info_clean$study == study_name])
+  Ns = round(seq(50, maxN, length.out = 50))
+  
+  # return values
+  df = data.frame(N = Ns, # sample sizes
+                  mean = NA, # the mean of the target ES across bootstraps
+                  median = NA,
+                  range_low = NA, # range
+                  range_high = NA,
+                  CI_99_low = NA, # 99% percentiles
+                  CI_99_high = NA,
+                  CI_95_low = NA, # 95% percentiles
+                  CI_95_high = NA)
+  rv = list(study = study_name,
+            nboot = nboot,
+            diff_CS_RESI_age = df, # mean difference between CS-RESI (adjusted RESI) in longitudinal and RESI in cross-sectional for age over bootstraps
+            diff_long_RESI_age = df,
+            diff_long_RESI_sex = df, # NEW: comparing the long RESI between long and CS studies.
+            diff_CS_RESI_sex = df, # for sex
+            diff_d_sex = df, # difference in Cohen's d for sex between longitudinal and cross-sectional
+            diff_stat_age = df,
+            diff_stat_sex = df
+                  )
+
+  for (size in Ns){
+  print(size)
+    
+  boot_val <- simplify2array(
+    mclapply(1:nboot, FUN = function(simInd, study_name, dat, size){
+      temp_obj = tryCatch(consis_func(study_name, size), error = function(e) {rep(NA, 12)})
+      print(temp_obj)
+      return(temp_obj)
+    }, 
+             study_name = study_name,
+             size = size,
+             mc.cores = num.cores)) %>% t()
+  
+  boot_val %<>% as.data.frame
+
+  # return
+  # for RESI of age
+  # dom = mean(boot_val$cs_RESI_age)
+  dom = 1
+  diff = with(boot_val, (CS_RESI_age - cs_RESI_age)/dom)
+  rv$diff_CS_RESI_age[which(rv$diff_CS_RESI_age$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                     median(diff, na.rm = TRUE),
+                                                               range(diff, na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                )
+  # for RESI of age
+  # dom = mean(boot_val$cs_RESI_age)
+  dom = 1
+  diff = with(boot_val, (L_RESI_age - cs_RESI_age)/dom)
+  rv$diff_long_RESI_age[which(rv$diff_long_RESI_age$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                          median(diff, na.rm = TRUE),
+                                                               range(diff, na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                               )                                                      
+  
+  # RESI for sex
+  # dom = mean(boot_val$cs_RESI_sex)
+  dom = 1
+  diff = with(boot_val, (CS_RESI_sex - cs_RESI_sex)/dom)
+  rv$diff_CS_RESI_sex[which(rv$diff_CS_RESI_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                      median(diff, na.rm = TRUE),
+                                                               range(diff, na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                               )
+  # Cohen's d for sex
+  # dom = mean(boot_val$d_sex_cs)
+  dom = 1
+  diff = with(boot_val, (d_sex_long - d_sex_cs)/dom)
+  rv$diff_d_sex[which(rv$diff_d_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                          median(diff, na.rm = TRUE),
+                                                         range(diff, na.rm = TRUE),
+                                                         quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                         quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                         ) 
+  # NEW: comparing Long RESI in long and CS studies
+  # dom = mean(boot_val$cs_RESI_sex)
+  dom = 1
+  diff = with(boot_val, (L_RESI_sex - cs_RESI_sex)/dom)
+  rv$diff_long_RESI_sex[which(rv$diff_long_RESI_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                          median(diff, na.rm = TRUE),
+                                                                         range(diff, na.rm = TRUE),
+                                                                         quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                                         quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                         )
+  # NEW: comparing statistics in long and CS
+  diff = with(boot_val, stat_age_long - stat_age_cs)
+  rv$diff_stat_age[which(rv$diff_stat_age$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                median(diff, na.rm = TRUE),
+                                                               range(diff, na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                               )
+  diff = with(boot_val, stat_sex_long - stat_sex_cs)
+  rv$diff_stat_sex[which(rv$diff_stat_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                median(diff, na.rm = TRUE),
+                                                               range(diff, na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                               quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                               )  
+  }
+  saveRDS(rv, paste0("resamp_objects/GMV_resamp_", study_name, ".rds"))
+}
+
+Sys.time()
+# rv$diff_CS_RESI_age
+# rv$diff_CS_RESI_sex
+# rv$diff_long_RESI_age
+```
+
+# Results
+```{r, fig.width=10, fig.height=10}
+# plotting function
+plot_consist = function(study_name){
+  rv = readRDS(paste0("CS_RESI_consistency_objects/GMV_resamp_", study_name, ".rds"))
+  # for age effect
+  p1 = ggplot(data = rv$diff_CS_RESI_age, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          # geom_ribbon(aes(ymin = range_low, ymax = range_high), fill="blue", alpha=0.1) +
+          # geom_line(aes(y = CI_95_low), linetype = 3) + geom_line(aes(y = CI_95_high), linetype = 3) + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for age", x = "N", y = "Difference") + theme_classic()
+  range_1 = ggplot_build(p1)$layout$panel_params[[1]]$y.range
+  # Long RESI in long and RESI in cs
+  p2 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          # geom_ribbon(aes(ymin = range_low, ymax = range_high), fill="blue", alpha=0.1) +
+          # geom_line(aes(y = CI_95_low), linetype = 3) + geom_line(aes(y = CI_95_high), linetype = 3) + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic()
+  range_2 = ggplot_build(p2)$layout$panel_params[[1]]$y.range
+
+  p1 = ggplot(data = rv$diff_CS_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for age", x = "N", y = "Difference") + theme_classic() + ylim(min(c(range_1, range_2)), max(c(range_1, range_2)))
+  p2 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic() + ylim(min(c(range_1, range_2)), max(c(range_1, range_2)))
+
+
+  # for sex effect
+  # difference between CS-RESI in long and RESI in CS
+  p5 = ggplot(data = rv$diff_CS_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for sex", x = "N", y = "Difference") + theme_classic() 
+  range_1 = ggplot_build(p5)$layout$panel_params[[1]]$y.range
+  # diff between unadjusted RESi in long and CS for sex
+  p6 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic() 
+  range_2 = ggplot_build(p6)$layout$panel_params[[1]]$y.range
+  # diff between Cohen's d in long and CS
+  p7 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+    geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() 
+  range_3 = ggplot_build(p7)$layout$panel_params[[1]]$y.range
+
+  ranges = c(range_1, range_2, range_3)
+  # difference between CS-RESI in long and RESI in CS
+  p5 = ggplot(data = rv$diff_CS_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for sex", x = "N", y = "Difference") + theme_classic()  + ylim(min(ranges), max(ranges))
+   # diff between unadjusted RESi in long and CS for sex
+  p6 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(ranges))
+  # diff between Cohen's d in long and CS
+  p7 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+    geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(ranges))
+
+  plot = ggarrange(p1, p2, p5, p6, p7, nrow = 1)
+  plot_out = annotate_figure(plot, left = textGrob(paste("Study:", study_name), rot = 90, vjust = 0.3, gp = gpar(cex = 1))) 
+  return(plot_out)
+}
+
+```
+
+```{r, fig.width=25, fig.height=17}
+p = list()
+studies = subset(study_info_clean, Design == "Longitudinal" )$study
+for (i in 1:length(studies)){
+  study_name = studies[i]
+  p[[i]] = plot_consist(study_name) %>% suppressWarnings()
+}
+margin = theme(plot.margin = unit(c(0,0,0,1), "cm"))
+do.call(grid.arrange, c(lapply(p, "+", margin), ncol = 2)) 
+```
+

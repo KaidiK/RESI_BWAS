@@ -1,0 +1,208 @@
+---
+title: "Figure 2 - Consistency and forest plots"
+author: "Kaidi Kang"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Figure 2: Consistency and forest plots
+
+
+```{r, fig.width = 14, fig.height=5}
+# PART A: Long RESI
+## GUSTO
+rv = readRDS("CS_RESI_consistency_objects/GMV_resamp_GUSTO.rds")
+# long resi for age
+p1 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic()
+range_1 = ggplot_build(p1)$layout$panel_params[[1]]$y.range
+# Long RESI for sex
+p2 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic()
+range_2 = ggplot_build(p2)$layout$panel_params[[1]]$y.range
+# Long Cohen's d for sex
+p3 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(size = 1, color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() 
+range_3 = ggplot_build(p3)$layout$panel_params[[1]]$y.range
+
+ranges = c(range_1, range_2, range_3)
+
+# long resi for age
+p1 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(ranges))
+# Long RESI for sex
+p2 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(c(range_2, range_3)))
+# Long Cohen's d for sex
+p3 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(size = 1, color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(c(range_2, range_3)))
+
+
+## ADNI
+rv = readRDS("CS_RESI_consistency_objects/GMV_resamp_ADNI.rds")
+# long resi for age
+p4 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic()
+range_1 = ggplot_build(p4)$layout$panel_params[[1]]$y.range
+# Long RESI for sex
+p5 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic()
+range_2 = ggplot_build(p5)$layout$panel_params[[1]]$y.range
+# Long Cohen's d for sex
+p6 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(size = 1, color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() 
+range_3 = ggplot_build(p6)$layout$panel_params[[1]]$y.range
+
+ranges = c(range_1, range_2, range_3)
+
+# long resi for age
+p4 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(ranges))
+# Long RESI for sex
+p5 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(c(range_2, range_3)))
+# Long Cohen's d for sex
+p6 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(size = 1, color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(c(range_2, range_3)))
+
+R1 = plot_grid(p1, p2, p3, nrow = 1)
+R2 = plot_grid(p4, p5, p6, nrow = 1)
+R1 = annotate_figure(R1, left = textGrob("Study: GUSTO", rot = 90, vjust = 0.3, gp = gpar(cex = 1))) 
+R2 = annotate_figure(R2, left = textGrob("Study: ADNI", rot = 90, vjust = 0.3, gp = gpar(cex = 1))) 
+
+PART_A =plot_grid(R1, R2,
+               labels = "(A)",
+               nrow = 2) 
+
+
+
+# PART B
+# PART A: Long RESI
+## GUSTO
+rv = readRDS("CS_RESI_consistency_objects/GMV_resamp_GUSTO.rds")
+# CS resi for age
+p1 = ggplot(data = rv$diff_CS_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "CS-RESI for age", x = "N", y = "Difference") + theme_classic()
+# CS RESI for sex
+p2 = ggplot(data = rv$diff_CS_RESI_sex, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "CS-RESI for sex", x = "N", y = "Difference") + theme_classic()
+
+## ADNI
+rv = readRDS("CS_RESI_consistency_objects/GMV_resamp_ADNI.rds")
+# CS resi for age
+p3 = ggplot(data = rv$diff_CS_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "CS-RESI for age", x = "N", y = "Difference") + theme_classic()
+
+# CS RESI for sex
+p4 = ggplot(data = rv$diff_CS_RESI_sex, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+        geom_line(size = 1, color = "blue") + 
+        geom_hline(yintercept = 0, linetype = 2) +
+        labs(title = "CS-RESI for sex", x = "N", y = "Difference") + theme_classic()
+
+
+R1 = plot_grid(p1, p2, nrow = 1)
+R2 = plot_grid(p3, p4, nrow = 1)
+R1 = annotate_figure(R1, left = textGrob(" ", rot = 90, vjust = 0.3, gp = gpar(cex = 1))) 
+R2 = annotate_figure(R2, left = textGrob(" ", rot = 90, vjust = 0.3, gp = gpar(cex = 1))) 
+
+
+PART_B =plot_grid(R1, R2,
+               labels = "(B)",
+               nrow = 2) 
+
+# grid.arrange(
+#   PART_A, PART_B, 
+#   layout_matrix = rbind(c(1, 2),
+#                         c(1, 2)
+#                         ),
+#   heights = c(1.1, 1.1),
+#   widths = c(3, 2)
+# ) %>% suppressWarnings()
+```
+
+
+
+```{r, fig.height=16, fig.width=14}
+# P1: forest plot of age effect on GMV
+
+RESI_GMV <- forest_plot(study_info = study_info_clean, outcome = "GMV", x_ul = 2)
+p1 = RESI_GMV$plot_age + labs(title = "Effects of Age on GMV") 
+
+RESI_sGMV <- forest_plot(study_info = study_info_clean, outcome = "sGMV", x_ul = 2)
+p2 = RESI_sGMV$plot_age + labs(title = "Effects of Age on sGMV") 
+
+RESI_WMV <- forest_plot(study_info = study_info_clean, outcome = "WMV", x_ul = 2)
+p3 = RESI_WMV$plot_age + labs(title = "Effects of Age on WMV") 
+
+# P4: age distribution
+p4 = RESI_GMV$age_dist + labs(title = "Age distribution", y = "") # + theme_classic() 
+
+legend <- get_legend(p4)
+
+p4 = p4 + theme(legend.position = c(0.71, 0.05)) # + theme(legend.position="none")
+
+P1 = plot_grid(p1, p2, p3, p4, labels = c("(C)", "(D)", "(E)", "(F)"), ncol = 4) %>% suppressWarnings()
+# P1
+#---------------------------------------------------
+grid.arrange(
+  PART_A, PART_B, P1,
+  layout_matrix = rbind(c(1, 2),
+                        c(1, 2),
+                        c(3, 3)
+                        ),
+  heights = c(1.1, 1.1, 5),
+  widths = c(3, 2)
+) %>% suppressWarnings()
+
+
+```

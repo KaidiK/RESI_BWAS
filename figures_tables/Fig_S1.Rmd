@@ -1,0 +1,38 @@
+---
+title: "Figure S1 - Scatter Plots"
+author: "Kaidi Kang"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Fig S1. Scatter plots
+
+```{r, warning = FALSE, message = FALSE}
+setwd("~/RESI/longitudinal/data_analysis")
+analysis_data <- read_csv("data/analysis_data/analysis_data_combat.csv")
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+study_info_clean <- read_csv("data/analysis_data/study_info_clean.csv")
+study_info_clean %<>% as.data.frame
+```
+
+
+```{r, fig.height=6, fig.width=8}
+
+study_list = study_info_clean[order(study_info_clean$N, decreasing = TRUE),]
+study_names = study_list$study[1:12] %>% as.character() 
+plot_data = subset(analysis_data, study %in% study_names)
+plot_data$study %<>% factor(levels = study_names)
+# P1: scatter plots
+P1 = ggplot(data = plot_data, aes(y = GMV_10000_combat, x = age_years)) + 
+      geom_point(alpha = 0.2, aes(col = sex)) + 
+      geom_smooth(formula = y ~ x, method = loess) + 
+      facet_wrap(~ study) + labs(title = "", y = 'Harmonized GMV / 10000', x = 'Age (in years)') + theme_bw() + theme(legend.position="bottom") 
+
+P1
+
+```

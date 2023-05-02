@@ -1,0 +1,304 @@
+---
+title: "Figure S2 - Partial regression plots sex effects"
+author: "Kaidi Kang"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+setwd("~/RESI/longitudinal/data_analysis")
+analysis_data <- read_csv("data/analysis_data/analysis_data_combat.csv")
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+study_info_clean <- read_csv("data/analysis_data/study_info_clean.csv")
+study_info_clean %<>% as.data.frame
+
+source("Code/functions/forest_plot.R")
+```
+
+
+## Fig. S2: Partial regression plots sex effects
+
+```{r, fig.height=8, fig.width=12}
+
+# GMV
+ES_GMV = forest_plot(study_info = study_info_clean, outcome = "GMV", x_ul = 2)
+# sGMV
+ES_sGMV = forest_plot(study_info = study_info_clean, outcome = "sGMV", x_ul = 2)
+# WMV
+ES_WMV = forest_plot(study_info = study_info_clean, outcome = "WMV", x_ul = 2)
+
+# ---- GMV ------
+# added variable plots
+# with Long RESI
+plot_data = ES_GMV$ES
+plot_data$w = 1/plot_data$L_RESI_se_sex
+fit = lm(L_RESI_sex ~ Design + ns(mean_age, 3) + ns(m2_age, 3) + ns(mean_sex, 3),
+         data = plot_data, weights = w)
+# residuals
+plot_data$res = residuals(fit)
+# the mean of sd(age) and skewness(age)
+# mean_mean_age = plot_data$mean_age %>% weighted.mean(w = plot_data$N) # = 45
+# mean_sd_age = plot_data$m2_age %>% weighted.mean(w = plot_data$N) # = 7
+# mean_skew_age = plot_data$m3_age %>% weighted.mean(w = plot_data$N) # = 0
+
+
+# vs mean age
+## the expected value of L-RESI over mean age when mean and SD of sex are fixed at typiecal levels
+## for the points
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$m2_age = 7
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = seq(0, 80, by = 0.1), m2_age = 7, mean_sex = 0.5, Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p1 = ggplot() + 
+  geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  mean_age)) + 
+  geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = mean_age), fill = "grey", alpha = 0.6) +
+  geom_line(data = data_line, aes(y = fit, x = mean_age), col = "dodgerblue2", size = 1) + 
+  ylim(-0.5, 1.9) +
+  theme_classic() + labs(title = " ", y = 'RESI | other', x = 'Mean age | Other')
+
+# vs SD(age)
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$mean_age = 45
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = seq(0, 20, by = 0.1), mean_sex = 0.5, Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p2 = ggplot() + geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  m2_age)) + 
+    geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = m2_age), fill = "grey", alpha = 0.6) +
+    geom_line(data = data_line, aes(y = fit, x = m2_age), col = "dodgerblue2", size = 1) + 
+    ylim(-1, 1.5) +
+    theme_classic() + labs(title = "", y = 'RESI | Other', x = 'SD of age | Other')
+
+
+# P3: estimated RESI vs mean(sex)
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$mean_age = 45
+new_data$m2_age = 7
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = 7, mean_sex = seq(0, 1, by = 0.01), Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p3 = ggplot() + geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  mean_sex)) +
+      geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = mean_sex), fill = "grey", alpha = 0.5) +
+      geom_line(data = data_line, aes(y = fit, x = mean_sex), col = "dodgerblue2", size = 1) +
+      ylim(-1, 2) +
+      theme_classic() + labs(title = "", y = 'RESI | other', x = 'Proportion of male | Other')
+
+
+# p4: estimated RESI vs design
+new_data = plot_data
+new_data$mean_age = 45
+new_data$m2_age = 7
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = 0.5, mean_sex = 0.5, Design = c("Cross-sectional", "Longitudinal"))
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p4 = ggplot(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  Design)) + 
+      geom_boxplot( fill='#A4A4A4', color="black") + 
+      ylim(0, 1.2) +
+      theme_classic() + labs(title = "", y = 'RESI | other', x = 'Design | Other')
+
+P1 = plot_grid(p1, p2, p3, p4, labels = c("(A) GMV"), nrow = 1) # %>% suppressWarnings()
+
+
+
+# ---- sGMV ------
+# added variable plots
+# with modified RESI
+plot_data = ES_sGMV$ES
+plot_data$w = 1/plot_data$L_RESI_se_sex
+fit = lm(L_RESI_sex ~ Design + ns(mean_age, 3) + ns(m2_age, 3) + ns(mean_sex, 3),
+         data = plot_data, weights = w)
+# residuals
+plot_data$res = residuals(fit)
+# the mean of sd(age) and skewness(age)
+# mean_mean_age = plot_data$mean_age %>% weighted.mean(w = plot_data$N) # = 45
+# mean_sd_age = plot_data$m2_age %>% weighted.mean(w = plot_data$N) # = 7
+# mean_skew_age = plot_data$m3_age %>% weighted.mean(w = plot_data$N) # = 0
+
+
+# vs mean age
+## the expected value of L-RESI over mean age when mean and SD of sex are fixed at typiecal levels
+## for the points
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$m2_age = 7
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = seq(0, 80, by = 0.1), m2_age = 7, mean_sex = 0.5, Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p1 = ggplot() + 
+  geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  mean_age)) + 
+  geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = mean_age), fill = "grey", alpha = 0.6) +
+  geom_line(data = data_line, aes(y = fit, x = mean_age), col = "dodgerblue2", size = 1) + 
+  ylim(-0.5, 1.9) +
+  theme_classic() + labs(title = " ", y = 'RESI | other', x = 'Mean age | Other')
+
+# vs SD(age)
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$mean_age = 45
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = seq(0, 20, by = 0.1), mean_sex = 0.5, Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p2 = ggplot() + geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  m2_age)) + 
+    geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = m2_age), fill = "grey", alpha = 0.6) +
+    geom_line(data = data_line, aes(y = fit, x = m2_age), col = "dodgerblue2", size = 1) + 
+    ylim(-1, 1.5) +
+    theme_classic() + labs(title = "", y = 'RESI | Other', x = 'SD of age | Other')
+
+
+# P3: estimated RESI vs mean(sex)
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$mean_age = 45
+new_data$m2_age = 7
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = 7, mean_sex = seq(0, 1, by = 0.01), Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p3 = ggplot() + geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  mean_sex)) +
+      geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = mean_sex), fill = "grey", alpha = 0.5) +
+      geom_line(data = data_line, aes(y = fit, x = mean_sex), col = "dodgerblue2", size = 1) +
+      ylim(-1, 2) +
+      theme_classic() + labs(title = "", y = 'RESI | other', x = 'Proportion of male | Other')
+
+
+# p4: estimated RESI vs design
+new_data = plot_data
+new_data$mean_age = 45
+new_data$m2_age = 7
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = 0.5, mean_sex = 0.5, Design = c("Cross-sectional", "Longitudinal"))
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p4 = ggplot(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  Design)) + 
+      geom_boxplot( fill='#A4A4A4', color="black") + 
+      ylim(0, 1.2) +
+      theme_classic() + labs(title = "", y = 'RESI | other', x = 'Design | Other')
+
+P2 = plot_grid(p1, p2, p3, p4, labels = c("(B) sGMV"), nrow = 1) # %>% suppressWarnings()
+
+
+
+
+# ---- WMV ------
+# added variable plots
+# with modified RESI
+plot_data = ES_WMV$ES
+plot_data$w = 1/plot_data$L_RESI_se_sex
+fit = lm(L_RESI_sex ~ Design + ns(mean_age, 3) + ns(m2_age, 3) + ns(mean_sex, 3),
+         data = plot_data, weights = w)
+# residuals
+plot_data$res = residuals(fit)
+# the mean of sd(age) and skewness(age)
+# mean_mean_age = plot_data$mean_age %>% weighted.mean(w = plot_data$N) # = 45
+# mean_sd_age = plot_data$m2_age %>% weighted.mean(w = plot_data$N) # = 7
+# mean_skew_age = plot_data$m3_age %>% weighted.mean(w = plot_data$N) # = 0
+
+
+# vs mean age
+## the expected value of L-RESI over mean age when mean and SD of sex are fixed at typiecal levels
+## for the points
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$m2_age = 7
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = seq(0, 80, by = 0.1), m2_age = 7, mean_sex = 0.5, Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p1 = ggplot() + 
+  geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  mean_age)) + 
+  geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = mean_age), fill = "grey", alpha = 0.6) +
+  geom_line(data = data_line, aes(y = fit, x = mean_age), col = "dodgerblue2", size = 1) + 
+  ylim(-0.5, 1.9) +
+  theme_classic() + labs(title = " ", y = 'RESI | other', x = 'Mean age | Other')
+
+# vs SD(age)
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$mean_age = 45
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = seq(0, 20, by = 0.1), mean_sex = 0.5, Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p2 = ggplot() + geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  m2_age)) + 
+    geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = m2_age), fill = "grey", alpha = 0.6) +
+    geom_line(data = data_line, aes(y = fit, x = m2_age), col = "dodgerblue2", size = 1) + 
+    ylim(-1, 1.5) +
+    theme_classic() + labs(title = "", y = 'RESI | Other', x = 'SD of age | Other')
+
+
+# P3: estimated RESI vs mean(sex)
+new_data = plot_data
+new_data$Design = "Cross-sectional"
+new_data$mean_age = 45
+new_data$m2_age = 7
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = 7, mean_sex = seq(0, 1, by = 0.01), Design = "Cross-sectional")
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p3 = ggplot() + geom_point(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  mean_sex)) +
+      geom_ribbon(data = data_line, aes(ymin = lwr, ymax = upr, x = mean_sex), fill = "grey", alpha = 0.5) +
+      geom_line(data = data_line, aes(y = fit, x = mean_sex), col = "dodgerblue2", size = 1) +
+      ylim(-1, 2) +
+      theme_classic() + labs(title = "", y = 'RESI | other', x = 'Proportion of male | Other')
+
+
+# p4: estimated RESI vs design
+new_data = plot_data
+new_data$mean_age = 45
+new_data$m2_age = 7
+new_data$mean_sex = 0.5
+plot_data$pred_L_RESI_sex = predict(fit, newdata = new_data)
+## for the lines
+data_line = data.frame(mean_age = 45, m2_age = 0.5, mean_sex = 0.5, Design = c("Cross-sectional", "Longitudinal"))
+pred = predict(fit, newdata = data_line, interval = "confidence")
+data_line = cbind(data_line, pred)
+p4 = ggplot(data = plot_data, aes(y = pred_L_RESI_sex + res, x =  Design)) + 
+      geom_boxplot( fill='#A4A4A4', color="black") + 
+      ylim(0, 1.2) +
+      theme_classic() + labs(title = "", y = 'RESI | other', x = 'Design | Other')
+
+P3 = plot_grid(p1, p2, p3, p4, labels = c("(C) WMV"), nrow = 1) # %>% suppressWarnings()
+
+
+#-------------
+grid.arrange(
+  P1, P2, P3,
+  layout_matrix = rbind(c(1),
+                        c(2),
+                        c(3)),
+  heights = c(1, 1, 1)
+) #%>% suppressWarnings()
+```

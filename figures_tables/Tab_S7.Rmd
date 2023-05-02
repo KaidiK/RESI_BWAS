@@ -1,0 +1,33 @@
+---
+title: "Table S7 - Increased ES under resampling schemes in UKB"
+author: "Kaidi Kang"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Tab. S7: Increased ES under resampling schemes in UKB
+
+```{r}
+# UKB
+tab_data <- readRDS("~/RESI/longitudinal/data_analysis/resampling_schemes/ADNI_UKB/resamp_scheme_UKB_actual_N.rds")
+tab_data %<>% round(2)
+tab_data$`RESI (95% CI)` = paste0(tab_data$mean_RESI_age, " (", tab_data$RESI_age_ll, ", ", tab_data$RESI_age_ul, ")")
+tab_data$`age SD (95% CI)` = paste0(tab_data$mean_sd_age, " (", tab_data$sd_age_ll, ", ", tab_data$sd_age_ul, ")")
+part_UKB = tab_data[, c("scheme", "RESI (95% CI)", "age SD (95% CI)")]
+print(part_UKB %>% t %>% as.data.frame)
+
+```
+
+```{r}
+cat("The increase in % SD of age across between-subject schemes: \n")
+temp = tab_data
+paste0(round((temp$mean_sd_age - temp$mean_sd_age[1])/ temp$mean_sd_age[1] * 100, 2), " %")
+
+cat("The increase in % RESI of age across between-subject schemes: \n")
+paste0(round((temp$mean_RESI_age - temp$mean_RESI_age[1])/ temp$mean_RESI_age[1] * 100, 2), " %")
+
+```

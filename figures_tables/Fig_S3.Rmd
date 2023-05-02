@@ -1,0 +1,113 @@
+---
+title: "Figure S3 -"
+author: "Kaidi Kang"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE}
+setwd("~/RESI/longitudinal/data_analysis")
+study_info_clean <- read_csv("data/analysis_data/study_info_clean.csv")
+study_info_clean %<>% as.data.frame
+
+```
+
+### Fig S3. Consistency of CS-RESI in 16 longitudinal studies
+```{r}
+plot_consist = function(study_name){
+  rv = readRDS(paste0("CS_RESI_consistency_objects/GMV_resamp_", study_name, ".rds"))
+  # for age effect
+  p1 = ggplot(data = rv$diff_CS_RESI_age, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          # geom_ribbon(aes(ymin = range_low, ymax = range_high), fill="blue", alpha=0.1) +
+          # geom_line(aes(y = CI_95_low), linetype = 3) + geom_line(aes(y = CI_95_high), linetype = 3) + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for age", x = "N", y = "Difference") + theme_classic()
+  range_1 = ggplot_build(p1)$layout$panel_params[[1]]$y.range
+  # Long RESI in long and RESI in cs
+  p2 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          # geom_ribbon(aes(ymin = range_low, ymax = range_high), fill="blue", alpha=0.1) +
+          # geom_line(aes(y = CI_95_low), linetype = 3) + geom_line(aes(y = CI_95_high), linetype = 3) + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic()
+  range_2 = ggplot_build(p2)$layout$panel_params[[1]]$y.range
+
+  p1 = ggplot(data = rv$diff_CS_RESI_age, aes(x = N, y = mean)) +
+        geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for age", x = "N", y = "Difference") + theme_classic() + ylim(min(c(range_1, range_2)), max(c(range_1, range_2)))
+  p2 = ggplot(data = rv$diff_long_RESI_age, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for age", x = "N", y = "Difference") + theme_classic() + ylim(min(c(range_1, range_2)), max(c(range_1, range_2)))
+
+
+  # for sex effect
+  # difference between CS-RESI in long and RESI in CS
+  p5 = ggplot(data = rv$diff_CS_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for sex", x = "N", y = "Difference") + theme_classic() 
+  range_1 = ggplot_build(p5)$layout$panel_params[[1]]$y.range
+  # diff between unadjusted RESi in long and CS for sex
+  p6 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic() 
+  range_2 = ggplot_build(p6)$layout$panel_params[[1]]$y.range
+  # diff between Cohen's d in long and CS
+  p7 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+    geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() 
+  range_3 = ggplot_build(p7)$layout$panel_params[[1]]$y.range
+
+  ranges = c(range_1, range_2, range_3)
+  # difference between CS-RESI in long and RESI in CS
+  p5 = ggplot(data = rv$diff_CS_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "CS-RESI for sex", x = "N", y = "Difference") + theme_classic()  + ylim(min(ranges), max(ranges))
+   # diff between unadjusted RESi in long and CS for sex
+  p6 = ggplot(data = rv$diff_long_RESI_sex, aes(x = N, y = mean)) +
+          geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "L-RESI for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(ranges))
+  # diff between Cohen's d in long and CS
+  p7 = ggplot(data = rv$diff_d_sex, aes(x = N, y = mean)) +
+    geom_ribbon(aes(ymin = CI_95_low, ymax = CI_95_high), fill="grey", alpha=0.7) + 
+          geom_line(color = "blue") + 
+          geom_hline(yintercept = 0, linetype = 2) +
+          labs(title = "Cohen's d for sex", x = "N", y = "Difference") + theme_classic() + ylim(min(ranges), max(ranges))
+
+  plot = ggarrange(p1, p2, p5, p6, p7, nrow = 1)
+  plot_out = annotate_figure(plot, left = textGrob(paste("Study:", study_name), rot = 90, vjust = 0.3, gp = gpar(cex = 1))) 
+  return(plot_out)
+}
+```
+
+
+```{r, fig.width=25, fig.height=17}
+p = list()
+studies = subset(study_info_clean, Design == "Longitudinal" )$study
+for (i in 1:length(studies)){
+  study_name = studies[i]
+  p[[i]] = plot_consist(study_name) %>% suppressWarnings()
+}
+margin = theme(plot.margin = unit(c(0,0,0,1), "cm"))
+do.call(grid.arrange, c(lapply(p, "+", margin), ncol = 2)) 
+```

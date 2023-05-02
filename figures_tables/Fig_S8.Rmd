@@ -1,0 +1,32 @@
+---
+title: "Figure S8 - Correlation in ABCD dataset"
+author: "Kaidi Kang"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Fig S8. Correlation in ABCD dataset
+
+
+```{r, fig.width=8, fig.height=6}
+# correlation between the within-subject change in GMV and (1) baseline measurement; and (2) within-subject change in measurements.
+plot_data = NULL
+for (i in 1:length(var_long)){
+  temp = readRDS(paste0("~/RESI/longitudinal/data_analysis/data/analysis_data/ABCD_psycho_measure_combat/data_", var_long[i], ".rds"))
+  temp$psycho_lab = var_long_lab[i]
+  plot_data = rbind(plot_data, temp)
+}
+
+p = ggplot(plot_data, aes(x = diff_psycho, y = diff_GMV )) + 
+  geom_point(alpha = 0.2) + 
+  geom_smooth(method = "lm", formula = 'y ~ x') + 
+  labs(title = "ABCD", x = "Change in Measurements", y = "Change in GMV / 10000" ) + facet_wrap(~ psycho_lab, nrow = 2) + theme_bw()
+
+print(p)
+
+```

@@ -1,0 +1,288 @@
+---
+title: "BWAS-RESI R1: Meta-analyses for the effect size of age"
+author: "Kaidi Kang"
+date: "7/30/2023"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+    use_bookdown: yes
+    code_folding: hide
+    toc_float: 
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(ggpubr)
+```
+
+# Summary
+
+In this part, we will conduct meta-analysis to quantify the association between study features and the estimated effect sizes (using RESI estimates) of age on different regional brain measures. 
+
+The meta-analyses for the global brian mesures are in the Fig_Tab.rmd file.
+
+# Functions
+```{r}
+meta_resi = function(ES, variable = "age", wls = TRUE, figure = TRUE){
+  
+  if (figure) {
+    # plots
+    if (variable == "age"){
+      # RESI for age
+      # 1. CS-RESI
+      ## S for age vs mean(age)
+      p1 = ggplot(data = ES, aes(y = CS_RESI_age, x = mean_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "age", y = 'CS-RESI', x = 'Mean age')
+      ## S for age vs 2nd moment of age
+      p2 = ggplot(data = ES, aes(y = CS_RESI_age, x = m2_age )) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = " age", y = 'CS-RESI', x = 'SD of age')
+      ## S for age vs 3rd moment of age
+      p3 = ggplot(data = ES, aes(y = CS_RESI_age, x = m3_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "age", y = 'CS-RESI', x = 'Skewness of age')
+      
+      # 2. Long RESI
+      ## S for age vs mean age
+      p4 = ggplot(data = ES, aes(y = L_RESI_age, x =  mean_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "age", y = 'L-RESI', x = 'Mean age')
+      ## S for age vs 2nd moment of age
+      p5 = ggplot(data = ES, aes(y = L_RESI_age, x =  m2_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "age", y = 'L-RESI', x = 'SD of age')
+      ## S for age vs 3rd moment of age
+      p6 = ggplot(data = ES, aes(y = L_RESI_age, x = m3_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "age", y = 'L-RESI', x = 'Skewness of age')
+      plot_age = ggpubr::ggarrange(p1, p2, p3, p4, p5, p6)
+      print(plot_age)      
+    } else {
+    # RESI for sex
+    # 1. CS RESI
+    ## S for sex vs mean age
+    p1 = ggplot(data = ES, aes(y =  CS_RESI_sex, x = mean_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "sex", y = 'CS RESI', x = 'mean age')
+    ## S for sex vs SD of age
+    p2 = ggplot(data = ES, aes(y = CS_RESI_sex, x = m2_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "sex", y = 'CS RESI', x = 'SD of age')
+    
+    ## S for sex vs mean of sex
+    p3 = ggplot(data = ES, aes(y = CS_RESI_sex, x = mean_sex)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "sex", y = 'CS RESI', x = 'proportion of male')
+
+    
+    # 2. Long RESI
+    ## S for sex vs mean age
+    p4 = ggplot(data = ES, aes(y = L_RESI_sex, x =  mean_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "sex", y = 'Long RESI', x = 'mean age')
+    ## S for sex vs SD of age
+    p5 = ggplot(data = ES, aes(y = L_RESI_sex, x = m2_age)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "sex", y = 'long RESI', x = 'SD of age')
+    ## S for sex vs mean sex
+    p6 = ggplot(data = ES, aes(y = L_RESI_sex, x = mean_sex)) + geom_point() + geom_smooth(formula = y ~ x, method = loess) + labs(title = "sex", y = 'Long RESI', x = 'proportion of male')
+    
+    plot_sex = ggpubr::ggarrange(p1, p2, p3, p4, p5, p6)
+    print(plot_sex)    
+    }
+  }
+  
+  # CS RESI for longitudinal studies or RESI for CS studies
+  # weights
+  if (wls) {
+    if (variable == "age") {
+      ES$w = 1/ES$CS_RESI_se_age
+    } else {
+      ES$w = 1/ES$CS_RESI_se_sex
+      }
+  } else { ES$w = 1}
+  
+  if (variable == "age") {
+    ES_fit_csRESI = lm(CS_RESI_age ~ Design + splines::ns(mean_age, 3) + splines::ns(m2_age, 3) + splines::ns(m3_age, 3), data = ES, weights = w)
+  } 
+  if (variable == "sex") {
+    ES_fit_csRESI = lm(CS_RESI_sex ~ Design + splines::ns(mean_age, 3) + splines::ns(m2_age, 3) + splines::ns(mean_sex, 3), data = ES, weights = w)
+  }
+  
+  ES_tab_csRESI = RESI::resi_pe(ES_fit_csRESI, data = ES)
+
+  # (Longitudinal/Regular) RESI for all studies
+  # weights
+  if (wls) {
+    if (variable == "age") {
+      ES$w = 1/ES$L_RESI_se_age
+    } else {
+      ES$w = 1/ES$L_RESI_se_sex
+      }
+  } else { ES$w = 1}
+
+  if (variable == "age") {
+    ES_fit_lRESI = lm(L_RESI_age ~ Design + splines::ns(mean_age, 3) + splines::ns(m2_age, 3) + splines::ns(m3_age, 3), data = ES, weights = w)
+  } 
+  if (variable == "sex") {
+    ES_fit_lRESI = lm(L_RESI_sex ~ Design + splines::ns(mean_age, 3) + splines::ns(m2_age, 3) + splines::ns(mean_sex, 3) , data = ES, weights = w)
+  }
+  
+  ES_tab_lRESI = RESI::resi_pe(ES_fit_lRESI, data = ES)
+  # summary(ES_fit_RESI)
+  return(list(
+              L_RESI = ES_tab_lRESI,
+              CS_RESI = ES_tab_csRESI))
+}
+
+```
+
+
+```{r}
+# Function for summarizing the study-wise RESI results into a table (one table for each outcome)
+
+## the outcomes
+# outcome = c(# ROI Vol
+#                  paste0("lh_Vol_", ROI_dict$var_names),
+#                  paste0("rh_Vol_", ROI_dict$var_names),
+#                  # CT
+#                  paste0("lh_CT_", ROI_dict$var_names),
+#                  paste0("rh_CT_", ROI_dict$var_names))
+# 
+# 
+# y  = outcome[1]
+# study_info = study_info_clean
+
+
+
+ES_tab = function(study_info, y){
+  # prepare plotting data
+  ES = study_info
+  ES$ROI = y
+  ES$CS_RESI_age = NA
+  ES$ll_CS_RESI_age = NA
+  ES$ul_CS_RESI_age = NA
+  ES$L_RESI_age = NA
+  ES$ll_L_RESI_age = NA
+  ES$ul_L_RESI_age = NA
+  
+  # ES$CS_RESI_sex = NA
+  # ES$ll_CS_RESI_sex = NA
+  # ES$ul_CS_RESI_sex = NA
+  # ES$L_RESI_sex = NA
+  # ES$ll_L_RESI_sex = NA
+  # ES$ul_L_RESI_sex = NA
+  # 
+  ES$CS_RESI_se_age = NA
+  # ES$CS_RESI_se_sex = NA
+  # 
+  ES$L_RESI_se_age = NA
+  # ES$L_RESI_se_sex = NA
+  # 
+  # ES$d_sex = NA
+  # ES$ll_d_sex = NA
+  # ES$ul_d_sex = NA
+
+  results = readRDS("Results/RESI_objects_ROI/age_effect/RESI_anova_results.rds")
+  
+  for (i in 1:nrow(ES)){
+    study_i = ES$study[i] %>% as.character()
+    study_name = gsub("-", "_", study_i)
+    fit_i = results[[study_i]][[y]]
+    if (ES$Design[i] == "Longitudinal") { 
+      # age
+      # CS RESI
+      ES$CS_RESI_age[i] = fit_i["ns(age_years, df = 2)", "CS-RESI"]
+      ES$ll_CS_RESI_age[i] = fit_i["ns(age_years, df = 2)", "CS 2.5%"]
+      ES$ul_CS_RESI_age[i] = fit_i["ns(age_years, df = 2)", "CS 97.5%"]
+      ES$CS_RESI_se_age[i] = fit_i["ns(age_years, df = 2)", "CS-RESI_se"]
+      
+      # Long RESI
+      ES$L_RESI_age[i] = fit_i["ns(age_years, df = 2)", "L-RESI"]
+      ES$ll_L_RESI_age[i] = fit_i["ns(age_years, df = 2)", "L 2.5%"]
+      ES$ul_L_RESI_age[i] = fit_i["ns(age_years, df = 2)", "L 97.5%"]  
+      ES$L_RESI_se_age[i] = fit_i["ns(age_years, df = 2)", "L-RESI_se"]
+
+      # # sex
+      # # CS RESI
+      # ES$CS_RESI_sex[i] = fit_i["sex_011", "CS.RESI"]
+      # ES$ll_CS_RESI_sex[i] = fit_i["sex_011", "CS.2.5."]
+      # ES$ul_CS_RESI_sex[i] = fit_i["sex_011", "CS.97.5."]
+      # ES$CS_RESI_se_sex[i] = fit_i["sex_011", "CS.RESI_se"]
+      # # Long RESI
+      # ES$L_RESI_sex[i] = fit_i["sex_011", "L.RESI"]
+      # ES$ll_L_RESI_sex[i] = fit_i["sex_011", "L.2.5."]
+      # ES$ul_L_RESI_sex[i] = fit_i["sex_011", "L.97.5."]
+      # ES$L_RESI_se_sex[i] = fit_i["sex_011", "L.RESI_se"]
+      # 
+      # # Cohen's d for sex effect
+      # d = z_to_d(sqrt(fit_i["sex_011", "X2"]), n = ES$N[i])
+      # ES$d_sex[i] = d[1, "d"]
+      # ES$ll_d_sex[i] = d[1, "CI_low"]
+      # ES$ul_d_sex[i] = d[1, "CI_high"]
+      
+    } else {
+      # Cross-sectional studies
+      # Here, longitudinal RESI = CS RESI
+      # age
+      ES$CS_RESI_age[i] = ES$L_RESI_age[i] = fit_i["ns(age_years, df = 2)", "RESI"]
+      ES$ll_CS_RESI_age[i] = ES$ll_L_RESI_age[i] = fit_i["ns(age_years, df = 2)", "2.5%"]
+      ES$ul_CS_RESI_age[i] = ES$ul_L_RESI_age[i] = fit_i["ns(age_years, df = 2)", "97.5%"]
+      # # sex
+      # ES$CS_RESI_sex[i] = ES$L_RESI_sex[i] = fit_i["sex_01", "RESI"]
+      # ES$ll_CS_RESI_sex[i] = ES$ll_L_RESI_sex[i] = fit_i["sex_01", "X2.5."]
+      # ES$ul_CS_RESI_sex[i] = ES$ul_L_RESI_sex[i] = fit_i["sex_01", "X97.5."]
+      # # se of RESI
+      ES$CS_RESI_se_age[i] = ES$L_RESI_se_age[i] = fit_i["ns(age_years, df = 2)", "RESI_se"]
+      # ES$CS_RESI_se_sex[i] = ES$L_RESI_se_sex[i] = fit_i["sex_01", "RESI_se"]
+      
+      # # Cohen's d for sex effect
+      # d = F_to_d(fit_i["sex_01", "F"], df = fit_i["sex_01", "Df"], df_error = ES$N[i] - 4)
+      # ES$d_sex[i] = d[1, "d"]
+      # ES$ll_d_sex[i] = d[1, "CI_low"]
+      # ES$ul_d_sex[i] = d[1, "CI_high"]
+      
+    }
+  } # end of for loop
+  return(ES)
+}
+
+# for (y in outcome){
+#   tab = ES_tab(study_info = study_info_clean, y = y)
+#   write.csv(tab, file = paste0("data_for_meta_analyses/", y, "_ES_tab.csv"))
+# }
+
+```
+
+
+# ROI meta-analysis results
+
+Summarizing the p-values after FDR.
+
+```{r}
+# summarizing the point estimates of meta-RESI for different regional brain measures
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+study_info_clean = read_csv("data/analysis_data/ROI/study_info_clean_ROI.csv")
+outcomes = c( # Vol
+               paste0("lh_Vol_", ROI_dict$var_names),
+               paste0("rh_Vol_", ROI_dict$var_names),
+               # CT
+               paste0("lh_CT_", ROI_dict$var_names),
+               paste0("rh_CT_", ROI_dict$var_names))
+
+tab = data.frame(ROI = outcomes)
+
+tab$hemisphere = ifelse(substr(tab$ROI, 1, 2) == "lh", "L", "R" )
+tab$measure_type = ifelse(substr(tab$ROI, 4, 5) == "CT", "CT", "Vol")
+
+for (i in 1:nrow(tab)){
+  y = tab$ROI[i]
+  cat("outcome:", y, "\n")
+  ES = ES_tab(study_info = study_info_clean, y = y)
+  meta_result = meta_resi(ES = ES, figure = FALSE)
+  
+  # summarizing the p-values
+  # the RESI of *study mean age* on the *L-RESI* of age on that region measure
+  tab$p_val_mean_age_L_RESI[i] = meta_result$L_RESI$anova["splines::ns(mean_age, 3)", "Pr(>F)"]
+  # SD of age
+  tab$p_val_m2_age_L_RESI[i] = meta_result$L_RESI$anova["splines::ns(m2_age, 3)", "Pr(>F)"]
+  # skewness of age
+  tab$p_val_m3_age_L_RESI[i] = meta_result$L_RESI$anova["splines::ns(m3_age, 3)", "Pr(>F)"]
+  # study design type
+  tab$p_val_design_L_RESI[i] = meta_result$L_RESI$anova["Design", "Pr(>F)"]
+  
+  # the RESI of *study mean age* on the *CS-RESI* of age on that region measure
+  tab$p_val_mean_age_CS_RESI[i] = meta_result$CS_RESI$anova["splines::ns(mean_age, 3)", "Pr(>F)"]
+  # SD of age
+  tab$p_val_m2_age_CS_RESI[i] = meta_result$CS_RESI$anova["splines::ns(m2_age, 3)", "Pr(>F)"]
+  # skewness of age
+  tab$p_val_m3_age_CS_RESI[i] = meta_result$CS_RESI$anova["splines::ns(m3_age, 3)", "Pr(>F)"]
+  # study design type
+  tab$p_val_design_CS_RESI[i] = meta_result$CS_RESI$anova["Design", "Pr(>F)"]
+}
+
+write.csv(tab, "Results/meta_analysis_results_ROI/meta_analysis_results_ROI.csv")
+```
+

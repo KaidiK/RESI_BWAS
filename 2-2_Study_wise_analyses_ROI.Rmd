@@ -1,0 +1,168 @@
+---
+title: "BWAS-RESI R1: study-wise analysis for regional brain measures"
+author: "Kaidi Kang"
+date: "7/25/2023"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+    use_bookdown: yes
+    code_folding: hide
+    toc_float: 
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(magrittr)
+library(dplyr)
+# library(foreach)
+# library(doParallel)
+library(parallel)
+library(pbmcapply)
+library(readr)
+library(splines)
+library(RESI)
+library(geepack)
+library(effectsize) # for calculating Cohen's d
+
+```
+
+## Summary
+
+Similar to the file 2-1, in this report, we conduct the study-wise analyses to estimate the effects of age and sex on the regional brain measures in each of the studies.
+
+## Study-wise analyses
+
+**Note:**
+
++ `geepack::geeglm` requires the data to be properly ordered by "time" with in each subject. Otherwise, the cluster variable may not be identified.
+
+```{r}
+analysis_data <- read_csv("data/analysis_data/ROI/analysis_data_ROI_complete_case_combat.csv") 
+analysis_data %<>% as.data.frame 
+study_info_clean <- read_csv("data/analysis_data/ROI/study_info_clean_ROI.csv")
+study_info_clean %<>% as.data.frame
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+```
+
+```{r, eval = TRUE}
+# the models used for each study
+study_info_clean$model = ifelse(study_info_clean$Design == "Longitudinal", "gee", "lm")
+
+# the model specification for each study
+for (x in study_info_clean$study){
+  study_data = subset(analysis_data, study == x)
+  include_sex = length(unique(study_data$sex)) > 1 # if two genders are both included in the study
+  
+  formula1 = paste("~ ns(age_years, df = 2)", 
+                 ifelse(include_sex, " + sex_01", "")
+                 )
+  formula2 = paste("~ ", ifelse(include_sex, "sex_01", ""), 
+                 " + ns(age_years, df = 2)"
+                 )
+  
+  study_info_clean$mod_spec_age[which(study_info_clean$study == x)] = formula2 # to deal with the current sequential ANOVA in resi.geeglm
+  study_info_clean$mod_spec_sex[which(study_info_clean$study == x)] = formula1
+}
+# study_info_clean
+```
+
+
+
+```{r, eval = TRUE}
+# study-wise analyses (only analyze the age effect)
+set.seed(2023)
+## the outcomes
+outcome = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+# for (a in outcome){
+#     dir.create(file.path("RESI_objects_ROI", a))
+# }
+
+Sys.time()
+
+rv = list()
+
+for (i in 1:nrow(study_info_clean)) {
+
+  study_i = study_info_clean$study[i]
+  design_i = study_info_clean$Design[i]
+  
+  cat("Study:", as.character(study_i), "\n")
+  cat("      Model:", as.character(study_info_clean$model[i]), "\n")
+  cat("      Design:", design_i, "\n")
+  
+
+  temp = pbmclapply(outcome, FUN = function(outcome_i, analysis_data, study_i){
+    # outcome_i = outcome[1]
+    y = paste0(outcome_i, "_combat") # use the harmonized outcomes
+    cat("outcome:", outcome_i, "\n")
+    
+    formula_age = paste0(y, study_info_clean$mod_spec_age[i])
+    formula_sex = paste0(y, study_info_clean$mod_spec_sex[i])
+  
+    # only select those variables needed 
+    # ps. to avoid bugs in RESI functions
+    data_i = analysis_data[analysis_data$study == study_i, c("study", "participant", "age_years", "sex_01", y)]
+    data_i = data_i[order(data_i$participant, data_i$age_years),]
+
+    if (design_i == "Longitudinal") {
+      # for age effect
+      fit_age = eval(parse(text = paste0("geeglm(formula =", formula_age, ", data = data_i, id = participant, corstr = 'exchangeable')") ) )
+      resi_obj_age = fit_age %>% resi_geeglm(nboot = 1000, data = data_i, store.boot = TRUE)
+      
+      boot_val = resi_obj_age$boot.results[, (ncol(resi_obj_age$boot.results)-3): ncol(resi_obj_age$boot.results)]
+      resi_se =  apply(as.matrix(boot_val), MARGIN = 2, FUN = sd, na.rm = TRUE)
+      resi_obj_age$anova = cbind(resi_obj_age$anova, `L-RESI_se` = resi_se[1:2], `CS-RESI_se` = resi_se[3:4])
+      
+      # # for sex effect
+      # fit_sex =  eval(parse(text = paste0("geeglm(formula =", formula_sex, ", data = data_i, id = participant, corstr = 'exchangeable')") ) )
+      # resi_obj_sex = fit_sex %>% resi_geeglm(nboot = 100, store.boot = TRUE)
+      # boot_val = resi_obj_sex$boot.results[, (ncol(resi_obj_sex$boot.results)-3): ncol(resi_obj_sex$boot.results)]
+      # resi_se =  apply(as.matrix(boot_val), MARGIN = 2, FUN = sd, na.rm = TRUE)
+      # resi_obj_sex$anova = cbind(resi_obj_sex$anova, `L-RESI_se` = resi_se[1:2], `CS-RESI_se` = resi_se[3:4])
+
+      # resi_obj = list(resi_obj_age = resi_obj_age$anova,
+                      # resi_obj_sex = resi_obj_sex$anova)
+      resi_obj = resi_obj_age$anova
+      return(resi_obj)
+
+    }
+    
+    if (design_i == "Cross-sectional") {
+      fit = eval(parse(text = paste0("lm(formula =", formula_age, ", data = data_i)") ) )
+      resi_obj = resi(fit, data = data_i, store.boot = TRUE, coefficients = FALSE, nboot = 1000)
+      
+      se = resi_obj$boot.results$t %>% apply(2, sd, na.rm = TRUE)
+      resi_obj$anova = cbind(resi_obj$anova, RESI_se = se[-1])
+      return(resi_obj$anova)
+    }
+  
+    }, analysis_data = analysis_data, study_i = study_i
+    , mc.cores = 46 #, mc.preschedule = FALSE
+  )
+  
+  names(temp) = outcome
+  rv[[study_i]]  = temp
+
+    
+}
+Sys.time()
+
+saveRDS(rv, "RESI_objects_ROI/age_effect/RESI_anova_results.rds")
+```
+
+
+
+
+
+
+

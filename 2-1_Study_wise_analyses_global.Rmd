@@ -1,0 +1,236 @@
+---
+title: "BWAS-RESI R1: study-wise analysis for whole brain measures"
+author: "Kaidi Kang"
+date: "7/25/2023"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+    use_bookdown: yes
+    code_folding: hide
+    toc_float: 
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(magrittr)
+library(dplyr)
+# library(foreach)
+# library(doParallel)
+library(parallel)
+library(pbmcapply)
+library(readr)
+library(splines)
+# devtools::install_github("statimagcoll/RESI", ref = "working", force = TRUE)
+
+library(RESI)
+library(geepack)
+library(effectsize) # for calculating Cohen's d
+
+```
+
+## Summary
+In this report, the study-wise analyses were conducted to estimate the age and sex effects on the global brain measures from each study.
+
+## Study-wise analyses
+
+**Note:**
+
++ `geepack::geeglm` requires the data to be properly ordered by "time" with in each subject. Otherwise, the cluster variable may not be identified.
+
+```{r}
+library(readr)
+analysis_data <- read_csv("data/analysis_data/whole_brain_measure/new/analysis_data_whole_brain_combat.csv")
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+study_info_clean <- read_csv("data/analysis_data/whole_brain_measure/new/study_info_whole_brain.csv")
+study_info_clean %<>% as.data.frame
+```
+
+```{r}
+
+# the models used for each study
+study_info_clean$model = ifelse(study_info_clean$Design == "Longitudinal", "gee", "lm")
+
+# the model specification for each study
+for (i in study_info_clean$study){
+  study_data = subset(analysis_data, study == i)
+  # include_site = length(unique(study_data$site)) > 1 # if there are >= 2 sites in the data
+  include_sex = length(unique(study_data$sex)) > 1 # if two genders are both included in the study
+  
+  formula1 = paste("~ ns(age_years, df = 2)", 
+                 ifelse(include_sex, " + sex_01", "")
+                 )
+  formula2 = paste("~ ", ifelse(include_sex, "sex_01", ""), 
+                 " + ns(age_years, df = 2)"
+                 )
+  
+  study_info_clean$mod_spec_age[which(study_info_clean$study == i)] = formula2 # to deal with the current sequential ANOVA in resi.geeglm
+  study_info_clean$mod_spec_sex[which(study_info_clean$study == i)] = formula1
+}
+# study_info_clean
+```
+
+
+# Outcomes: GMV, sGMV, WMV
+```{r, eval = FALSE}
+Sys.time()
+# study-wise analyses
+set.seed(1213)
+## the outcomes
+outcomes = c("GMV", "sGMV", "WMV")
+for (a in outcomes){
+  y = paste0(a, "_10000_combat") # use the harmonized outcomes
+  for (i in 1:nrow(study_info_clean)){ #
+    study_i = study_info_clean$study[i] %>% as.character()
+    design_i = study_info_clean$Design[i]
+    cat("Study:", as.character(study_i), "\n")
+    cat("    outcome:", a, "\n")
+    cat("    Model:", as.character(study_info_clean$model[i]), "\n")
+    cat("    Design:", design_i, "\n")
+    
+    formula_age = paste0(y, study_info_clean$mod_spec_age[i])
+    formula_sex = paste0(y, study_info_clean$mod_spec_sex[i])
+    
+    data_i = subset(analysis_data, study == study_i)
+    data_i = data_i[order(data_i$participant, data_i$age_years),]
+
+    if (design_i == "Longitudinal") {
+      # for age effect
+      fit_age = eval(parse(text = paste0("geeglm(formula = ", formula_age, ", data = data_i, id = participant, corstr = 'exchangeable')") )) 
+      resi_obj_age = resi(fit_age, data = data_i, nboot = 1000, store.boot = TRUE)
+      
+      boot_val = resi_obj_age$boot.results$t[, (ncol(resi_obj_age$boot.results$t)-3): ncol(resi_obj_age$boot.results$t)]
+      resi_se =  apply(as.matrix(boot_val), MARGIN = 2, FUN = sd, na.rm = TRUE)
+      resi_obj_age$anova = cbind(resi_obj_age$anova, `L-RESI_se` = resi_se[1:2], `CS-RESI_se` = resi_se[3:4])
+      # for sex effect
+      fit_sex = eval(parse(text = paste0("geeglm(formula = ", formula_sex, ", data = data_i, id = participant, corstr = 'exchangeable')") )) 
+      resi_obj_sex = resi(fit_sex, data = data_i, nboot = 1000, store.boot = TRUE)
+      boot_val = resi_obj_sex$boot.results$t[, (ncol(resi_obj_sex$boot.results$t)-3): ncol(resi_obj_sex$boot.results$t)]
+      resi_se =  apply(as.matrix(boot_val), MARGIN = 2, FUN = sd, na.rm = TRUE)
+      resi_obj_sex$anova = cbind(resi_obj_sex$anova, `L-RESI_se` = resi_se[1:2], `CS-RESI_se` = resi_se[3:4])
+      
+      
+      resi_obj = list(resi_obj_age = resi_obj_age$anova,
+                      resi_obj_sex = resi_obj_sex$anova)
+      
+    } 
+    if (design_i == "Cross-sectional") {
+      fit = lm(formula_age, data = data_i)
+      resi_obj = resi(fit, data = data_i, nboot = 1000, store.boot = TRUE)
+      se = resi_obj$boot.results$t[, 6:7] %>% apply(2, sd, na.rm = TRUE)
+      resi_obj$anova = cbind(resi_obj$anova, RESI_se = se[-1])
+    }
+    
+    study_name = gsub("-", "_", study_i)
+    assign(paste0("RESI_", study_name), resi_obj)
+    saveRDS(resi_obj, file = paste0("Results/RESI_objects_whole_brain/", a, "/", a, "_RESI_", study_name, ".rds"))
+  }
+}
+Sys.time()
+```
+
+
+# Outcome: CT
+
+```{r}
+library(readr)
+analysis_data <- read_csv("data/analysis_data/whole_brain_measure/new/CT/analysis_data_global_CT_combat.csv")
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+study_info_clean <- read_csv("data/analysis_data/whole_brain_measure/new/CT/study_info_clean_global_CT.csv")
+study_info_clean %<>% as.data.frame
+```
+
+```{r}
+# the models used for each study
+study_info_clean$model = ifelse(study_info_clean$Design == "Longitudinal", "gee", "lm")
+
+# the model specification for each study
+for (i in study_info_clean$study){
+  study_data = subset(analysis_data, study == i)
+  # include_site = length(unique(study_data$site)) > 1 # if there are >= 2 sites in the data
+  include_sex = length(unique(study_data$sex)) > 1 # if two genders are both included in the study
+  
+  formula1 = paste("~ ns(age_years, df = 2)", 
+                 ifelse(include_sex, " + sex_01", "")
+                 )
+  formula2 = paste("~ ", ifelse(include_sex, "sex_01", ""), 
+                 " + ns(age_years, df = 2)"
+                 )
+  
+  study_info_clean$mod_spec_age[which(study_info_clean$study == i)] = formula2 # to deal with the current sequential ANOVA in resi.geeglm
+  study_info_clean$mod_spec_sex[which(study_info_clean$study == i)] = formula1
+}
+# study_info_clean
+```
+
+```{r}
+Sys.time()
+# study-wise analyses
+set.seed(1213)
+## the outcomes
+outcomes = c("CT")
+
+for (a in outcomes){
+  
+  y = paste0(a, "_combat") # use the harmonized outcomes
+  
+  for (i in 1:nrow(study_info_clean)){
+                      
+    study_i = study_info_clean$study[i] %>% as.character()
+    design_i = study_info_clean$Design[i]
+    cat("Study:", as.character(study_i), "\n")
+    cat("    outcome:", a, "\n")
+    cat("    Model:", as.character(study_info_clean$model[i]), "\n")
+    cat("    Design:", design_i, "\n")
+    
+    formula_age = paste0(y, study_info_clean$mod_spec_age[i])
+    formula_sex = paste0(y, study_info_clean$mod_spec_sex[i])
+    
+    data_i = subset(analysis_data, study == study_i)
+    data_i = data_i[order(data_i$participant, data_i$age_years),]
+
+    if (design_i == "Longitudinal") {
+      # for age effect
+      fit_age = eval(parse(text = paste0("geeglm(formula = ", formula_age, ", data = data_i, id = participant, corstr = 'exchangeable')") )) 
+      resi_obj_age = resi(fit_age, data = data_i, nboot = 1000, store.boot = TRUE)
+      
+      boot_val = resi_obj_age$boot.results$t[, (ncol(resi_obj_age$boot.results$t)-3): ncol(resi_obj_age$boot.results$t)]
+      resi_se =  apply(as.matrix(boot_val), MARGIN = 2, FUN = sd, na.rm = TRUE)
+      resi_obj_age$anova = cbind(resi_obj_age$anova, `L-RESI_se` = resi_se[1:2], `CS-RESI_se` = resi_se[3:4])
+      # for sex effect
+      fit_sex = eval(parse(text = paste0("geeglm(formula = ", formula_sex, ", data = data_i, id = participant, corstr = 'exchangeable')") )) 
+      resi_obj_sex = resi(fit_sex, data = data_i, nboot = 1000, store.boot = TRUE)
+      boot_val = resi_obj_sex$boot.results$t[, (ncol(resi_obj_sex$boot.results$t)-3): ncol(resi_obj_sex$boot.results$t)]
+      resi_se =  apply(as.matrix(boot_val), MARGIN = 2, FUN = sd, na.rm = TRUE)
+      resi_obj_sex$anova = cbind(resi_obj_sex$anova, `L-RESI_se` = resi_se[1:2], `CS-RESI_se` = resi_se[3:4])
+      
+      
+      resi_obj = list(resi_obj_age = resi_obj_age$anova,
+                      resi_obj_sex = resi_obj_sex$anova)
+      
+    } 
+    if (design_i == "Cross-sectional") {
+      fit = lm(formula_age, data = data_i)
+      resi_obj = resi(fit, data = data_i, nboot = 1000, store.boot = TRUE)
+      se = resi_obj$boot.results$t[, 6:7] %>% apply(2, sd, na.rm = TRUE)
+      resi_obj$anova = cbind(resi_obj$anova, RESI_se = se[-1])
+    }
+    
+    study_name = gsub("-", "_", study_i)
+    assign(paste0("RESI_", study_name), resi_obj)
+    saveRDS(resi_obj, file = paste0("Results/RESI_objects_whole_brain/", a, "/", a, "_RESI_", study_name, ".rds"))
+    
+    }
+
+}
+    
+  
+Sys.time()
+# it took about 6 hrs.
+```
+
+
+
+

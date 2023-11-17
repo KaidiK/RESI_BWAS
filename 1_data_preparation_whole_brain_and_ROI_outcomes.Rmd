@@ -1,0 +1,605 @@
+---
+title: "BWAS-RESI R1 - Data preparation for global and regional brain measures data"
+author: "Kaidi Kang"
+date: "7/25/2023"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+    use_bookdown: yes
+    code_folding: hide
+    toc_float: 
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(table1)
+library(e1071) # for calculating moments
+library(pracma) # for the nth root
+library(readr)
+library(dplyr)
+library(magrittr)
+library(splines)
+```
+
+
+# Summary
+
+To address the revision comments from the 1st round review, we decided to further consider regional brain measures (e.g., cortical thickness and volume of each of the 34 regions of interest [ROIs] per hemisphere based on Desikan-Killiany Parcellation). 
+
+This rmd file takes the raw datasets and outputs the datasets ready for analyese for the structural brain outcomes (i.e., global GMV, sGMV, WMV, mean CT, regional GMV and regional CT). The output datasets use ABCD release 5.
+
+# Regional brain measure data
+
+## Variable dictionary
+```{r, eval = FALSE}
+# In the main dataset
+# Frontal
+ROI_frontal = c(`Super Frontal` = "superiorfrontal",
+                `Rostral Middle Frontal` = "rostralmiddlefrontal",
+                `Caudal Middle Frontal` = "caudalmiddlefrontal",
+                `Pars Opercularis` = "parsopercularis",
+                `Pars Triangularis` = "parstriangularis",
+                `Pars Orbitalis` = "parsorbitalis",
+                `Lateral Orbitofrontal` = "lateralorbitofrontal",
+                `Medial Orbitofrontal` = "medialorbitofrontal",
+                `Precentral` = "precentral",
+                `Paracentral` = "paracentral",
+                `Frontal Pole` = "frontalpole",
+                `Rostral Anterior` = "rostralanteriorcingulate",
+                `Caudal Anterior` = "caudalanteriorcingulate"
+                )
+
+# Parietal
+ROI_parietal = c(`Superior Parietal` = "superiorparietal",
+                 `Inferior Parietal` = "inferiorparietal",
+                 `Supramarginal` = "supramarginal",
+                 `Postcentral` = "postcentral",
+                 `Precuneus` = "precuneus",
+                 `Posterior` = "posteriorcingulate",
+                 `Isthmus` = "isthmuscingulate"
+                 )
+
+# Temporal 
+ROI_temporal = c(`Superior Temporal` = "superiortemporal",
+                 `Middle Temporal` = "middletemporal",
+                 `Inferior Temporal` = "inferiortemporal",
+                 `Banks of the Superior Temporal Sulcus` = "bankssts",
+                 `Fusiform` = "fusiform",
+                 `Transverse Temporal` = "transversetemporal",
+                 `Entorhinal` = "entorhinal",
+                 `Temporal Pole` = "temporalpole",
+                 `Parahippocampal` = "parahippocampal",
+                 `Insula` = "insula"
+                 )
+
+# Occipital
+ROI_occipital = c(`Lateral Occipital` = "lateraloccipital",
+                  `Lingual` = "lingual",
+                  `Cuneus` = "cuneus",
+                  `Pericalcarine` = "pericalcarine"
+                  )
+
+# Other?
+# ROI_other = c(`Insula` = "insula")
+
+ROI_dict = rbind(cbind(lobe = "Frontal", ROI_label = names(ROI_frontal), var_names = ROI_frontal),
+                 cbind(lobe = "Parietal", ROI_label = names(ROI_parietal), var_names = ROI_parietal),
+                 cbind(lobe = "Temporal", ROI_label = names(ROI_temporal), var_names = ROI_temporal),
+                 cbind(lobe = "Occipital", ROI_label = names(ROI_occipital), var_names = ROI_occipital)
+                 # cbind(lobe = "Other", ROI_label = names(ROI_other), var_names = ROI_other)
+                 ) %>% as.data.frame
+
+# In the longitudinal ABCD dataset
+
+# variable dictionary for longitudinal ABCD
+# Frontal
+ROI_frontal = c(`Super Frontal` = "sufr",
+                `Rostral Middle Frontal` = "rrmdfr",
+                `Caudal Middle Frontal` = "cdmdfr",
+                `Pars Opercularis` = "parsopc",
+                `Pars Triangularis` = "parstgris",
+                `Pars Orbitalis` = "parsobis",
+                `Lateral Orbitofrontal` = "lobfr",
+                `Medial Orbitofrontal` = "mobfr",
+                `Precentral` = "precn",
+                `Paracentral` = "paracn",
+                `Frontal Pole` = "frpole",
+                `Rostral Anterior` = "rracate",
+                `Caudal Anterior` = "cdacate"
+                )
+
+# Parietal
+ROI_parietal = c(`Superior Parietal` = "supl",
+                 `Inferior Parietal` = "ifpl",
+                 `Supramarginal` = "sm",
+                 `Postcentral` = "postcn",
+                 `Precuneus` = "pc",
+                 `Posterior` = "ptcate",
+                 `Isthmus` = "ihcate"
+                 )
+
+# Temporal 
+ROI_temporal = c(`Superior Temporal` = "sutm",
+                 `Middle Temporal` = "mdtm",
+                 `Inferior Temporal` = "iftm",
+                 `Banks of the Superior Temporal Sulcus` = "bankssts",
+                 `Fusiform` = "fusiform",
+                 `Transverse Temporal` = "trvtm",
+                 `Entorhinal` = "ehinal",
+                 `Temporal Pole` = "tmpole",
+                 `Parahippocampal` = "parahpal",
+                 `Insula` = "insula"
+                 )
+
+# Occipital
+ROI_occipital = c(`Lateral Occipital` = "locc",
+                  `Lingual` = "lingual",
+                  `Cuneus` = "cuneus",
+                  `Pericalcarine` = "pericc"
+                  )
+
+# # Other?
+# ROI_other = c()
+
+ROI_dict_long_ABCD = rbind(cbind(lobe = "Frontal", ROI_label = names(ROI_frontal), var_names_ABCD = ROI_frontal),
+                           cbind(lobe = "Parietal", ROI_label = names(ROI_parietal), var_names_ABCD = ROI_parietal),
+                           cbind(lobe = "Temporal", ROI_label = names(ROI_temporal), var_names_ABCD = ROI_temporal),
+                           cbind(lobe = "Occipital", ROI_label = names(ROI_occipital), var_names_ABCD = ROI_occipital)
+                           # cbind(lobe = "Other", ROI_label = names(ROI_other), var_names_ABCD = ROI_other)
+                           ) %>% as.data.frame
+
+ROI_dict = merge(ROI_dict, ROI_dict_long_ABCD)
+
+write.csv(ROI_dict, "data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+```
+
+```{r}
+ROI_dict <- readr::read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+```
+
+## Data cleaning
+
+```{r}
+library(readr)
+# data containing whole brain measures and regional measures
+data_ROI <- read_csv("data/raw_data/cn_data_clean_dkmorph_26Jul2023.csv")
+
+var_list = c("participant", "study", "age_years", "sex_01", "dx", "site", "GMV_10000", "sGMV_10000", "WMV_10000",
+             # ROI Vol
+             paste0("lh_Vol_", ROI_dict$var_names),
+             paste0("rh_Vol_", ROI_dict$var_names),
+             # CT
+             paste0("lh_CT_", ROI_dict$var_names),
+             paste0("rh_CT_", ROI_dict$var_names),
+             # surface area
+             paste0("lh_SA_", ROI_dict$var_names),
+             paste0("rh_SA_", ROI_dict$var_names))
+```
+
+Same data cleaning as the initial submission was conducted here.
+
++ study `PPMI` & `FemaleASD`: everyone has the same value in their follow-ups. Only the baseline measurements are remained.
+
+```{r}
+# remove duplicate records
+data_ROI_clean = subset(data_ROI, !duplicated(data_ROI))
+
+# PPMI:
+PPMI = data_ROI_clean %>% filter(study == "PPMI") %>% group_by(study, participant) %>% slice_min(age_years)
+data_ROI_clean = rbind(subset(data_ROI_clean, study != "PPMI"), PPMI)
+# FemaleASD
+FemaleASD = data_ROI_clean %>% filter(study == "FemaleASD") %>% group_by(study, participant) %>% slice_min(age_years)
+data_ROI_clean = rbind(subset(data_ROI_clean, study != "FemaleASD"), FemaleASD)
+
+# UCSD
+data_ROI_clean = subset(data_ROI_clean, study != "UCSD")
+```
+
+
+## Replace with Longitudinal ABCD (release 5)
+
+```{r}
+long_ABCD <- read_csv("data/analysis_data/ABCD_release5.csv") %>% as.data.frame() 
+ROI_dict = read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+# Volume outcome
+## Left
+var_vol_LH = paste0("lh_Vol_", ROI_dict$var_names)
+## Right
+var_vol_RH = paste0("rh_Vol_", ROI_dict$var_names)
+# Cortical Thickness
+## Left
+var_CT_LH = paste0("lh_CT_", ROI_dict$var_names)
+## Right
+var_CT_RH = paste0("rh_CT_", ROI_dict$var_names)
+
+# Surface area
+## Left
+var_SA_LH = paste0("lh_SA_", ROI_dict$var_names)
+## Right
+var_SA_RH = paste0("rh_SA_", ROI_dict$var_names)
+
+long_ABCD = long_ABCD[, c("src_subject_id", "dx", "age_years", "sex_01", "eventname", "site", "GMV", "sGMV", "WMV",
+                          var_vol_LH, var_vol_RH, var_CT_LH, var_CT_RH, var_SA_LH, var_SA_RH
+                          )]
+
+# SELECTING CN SUBJECTS
+long_ABCD = subset(long_ABCD, dx == "CN")
+
+long_ABCD = long_ABCD[order(long_ABCD$src_subject_id, long_ABCD$age_years, decreasing = FALSE), ]
+
+# removing the rows with missing age 
+long_ABCD = subset(long_ABCD, !is.na(age_years))
+
+
+# generate a new "numeric" id
+# Note: geeglm has problem with ID values containing characters
+long_ABCD %<>% group_by(src_subject_id) %>% mutate(temp_id = cur_group_id()) 
+
+
+# rescale GMV, sGMV, and WMV
+long_ABCD$GMV_10000 = long_ABCD$GMV / 10000
+long_ABCD$sGMV_10000 = long_ABCD$sGMV / 10000
+long_ABCD$WMV_10000 = long_ABCD$WMV / 10000
+
+# data reformatting
+long_ABCD$participant = long_ABCD$temp_id
+long_ABCD$study = "ABCD"
+
+
+
+
+# put it back to the full dataset
+var_list = c("participant", "study", "age_years", "sex_01", "dx", "site", "GMV_10000", "sGMV_10000", "WMV_10000",
+             var_vol_LH, var_vol_RH, var_CT_LH, var_CT_RH, var_SA_LH, var_SA_RH)
+
+data_ROI_clean = data_ROI_clean[, var_list]
+
+# remove the cross-sectional ABCD
+data_ROI_clean = subset(data_ROI_clean, study != "ABCD")
+# put the longitudinal ABCD back
+data_ROI_clean = rbind(data_ROI_clean, long_ABCD[, var_list])
+
+
+
+# save the cleaned ABCD release 5
+write.csv(long_ABCD[, var_list], "data/analysis_data/ABCD_release5_clean.csv")
+```
+
+## Global average CT
+
+The global CT is defined as the average CT across all the DK regions weigthed by the region surface areas.
+
+```{r}
+## Left
+var_CT_LH = paste0("lh_CT_", ROI_dict$var_names)
+## Right
+var_CT_RH = paste0("rh_CT_", ROI_dict$var_names)
+
+# Surface area
+## Left
+var_SA_LH = paste0("lh_SA_", ROI_dict$var_names)
+## Right
+var_SA_RH = paste0("rh_SA_", ROI_dict$var_names)
+
+data_ROI_clean %<>% as.data.frame()
+data_ROI_clean$CT = sapply(1:nrow(data_ROI_clean), 
+              function(i){
+                x = as.numeric(data_ROI_clean[i, c(var_CT_LH, var_CT_RH)])
+                w = as.numeric( data_ROI_clean[i, c(var_SA_LH, var_SA_RH)])
+                CT = weighted.mean(x = x, 
+                                   w = w)
+                return(CT)
+              })
+
+```
+
+
+## Save
+```{r}
+# if GMV is missing, all ROI measures are missing. 
+# only use the complete cases for the ROI outcomes
+data_ROI_clean_na_omit = na.omit(data_ROI_clean)
+
+# complete-case data
+write.csv(data_ROI_clean_na_omit, "data/analysis_data/ROI/analysis_data_ROI_complete_case.csv")
+# not complete-case data
+write.csv(data_ROI_clean, "data/analysis_data/ROI/analysis_data_ROI.csv")
+```
+
+
+**Compare with the data used for initial submission**:
+
+```{r}
+# data used for initial submission
+analysis_data <- read_csv("data/analysis_data/whole_brain_measure/old_initial_submission/analysis_data_combat.csv")
+analysis_data %<>% as.data.frame
+
+# data that is going to be used for the 1st revision
+data_ROI_clean = read_csv("data/analysis_data/ROI/analysis_data_ROI_complete_case.csv")
+
+data_new = cbind(study = data_ROI_clean$study, R = "New")
+data_old = cbind(study = analysis_data$study, R = "Previous")
+
+data_combine = rbind(data_new, data_old) %>% as.data.frame()
+table1(~ study|R, data = data_combine)
+
+```
+
+## Study feature summary table
+```{r}
+# new study summary table 
+
+# FUNCTION for creating study summary table
+sum_tab = function(data) {
+  # independent data
+  ind_data = data %>% group_by(study, participant) %>% slice_sample(n = 1) %>% ungroup()
+  # Note: there may be some subjects from different study but having same subject IDs.
+  tab1 = ind_data %>% group_by(study) %>% summarise(N = length(unique(participant)))
+  tab2 = data %>% group_by(study) %>% summarise(tot_obs = length(participant) )
+  tab = merge(tab1, tab2)
+  tab = tab[order(tab$N, decreasing = TRUE),]
+  rownames(tab) = as.character(1:nrow(tab))
+  tab %<>% mutate(Design = ifelse(N == tot_obs, "Cross-sectional", "Longitudinal"))
+  
+  features = data %>% group_by(study) %>% summarise(med_age = median(age_years), 
+                                                     mean_age = moment(age_years), 
+                                                     m2_age = moment(age_years, order = 2, center = TRUE) %>% sqrt(), # (2nd central moment)^(1/2)
+                                                     m3_age = moment(age_years, order = 3, center = TRUE) %>% nthroot(3), # (3rd central moment)^(1/3)
+                                                     mean_sex = moment(sex_01),
+                                                     m2_sex = moment(sex_01, order = 2, center = TRUE) %>% sqrt(),
+                                                     m3_sex = moment(sex_01, order = 3, center = TRUE) %>% nthroot(3)
+                                                     )
+  
+  # proportion of records that have at least one of ROI variables has missing value
+  tab = merge(tab, features)
+  
+  
+  return(tab)
+}
+
+
+data_ROI_clean = read_csv("data/analysis_data/ROI/analysis_data_ROI_complete_case.csv")
+
+
+study_info_clean = sum_tab(data_ROI_clean) 
+
+write.csv(study_info_clean, "data/analysis_data/ROI/study_info_clean_ROI.csv")
+
+```
+
+## Removing site effects
+
+```{r}
+# Note: different subjects may have missing values in different variables. For Combat, we need to remove the missing values in advance. 
+# so for different ROI measures, we may need to remove different records.
+
+library(neuroCombat)
+library(longCombat)
+
+study_info_clean = read_csv("data/analysis_data/ROI/study_info_clean_ROI.csv")
+data_ROI_clean = read_csv("data/analysis_data/ROI/analysis_data_ROI_complete_case.csv") %>% as.data.frame
+ROI_dict <- readr::read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv") %>% as.data.frame
+
+ROI_var_list = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+
+combat_data = NULL
+for (i in 1:nrow(study_info_clean)){
+  
+  study_i = study_info_clean$study[i]
+  design_i = study_info_clean$Design[i]
+  cat("Study:", as.character(study_i), "\n")
+  cat("    Design:", design_i, "\n")
+  # data
+  data_i = subset(data_ROI_clean, study == study_i)
+  data_i = data_i[order(data_i$participant, data_i$age_years),] # sort
+  ## generating a unique record indicator for merging combat outcome back
+  ## Some subjects may have two visits that are at the same age (i.e., the visit interval is too short).
+  # data_i$U_id = 1:nrow(data_i)
+  
+  if (length(unique(data_i$site)) == 1) {
+    cat("only 1 site in this dataset, skip. \n")
+    # the combat variable = the original variable
+    data_i[, paste0(ROI_var_list, "_combat")] = data_i[, ROI_var_list] 
+    data_i = data_i[, c("study", "participant", "age_years", "sex_01", "site", paste0(rep(ROI_var_list, each = 2), c("", "_combat")))]
+  } else {
+      if (design_i == "Longitudinal") {
+        
+        obj_combat = longCombat(idvar = "participant", 
+                               timevar = "age_years", 
+                               batchvar = "site", 
+                               features = c(ROI_var_list),
+                               formula = "ns(age_years, df = 2) + sex_01",
+                               ranef = "(1|participant)",
+                               data = data_i,
+                               verbose = FALSE)
+        
+        data_i[, paste0(ROI_var_list, "_combat")] = obj_combat$data_combat[, paste0(ROI_var_list, ".combat")]
+        
+        data_i = data_i[order(data_i$participant, data_i$age_years), ]
+        
+      # reorder the columns
+      data_i = data_i[, c("study", "participant", "age_years", "sex_01", "site", paste0(rep(ROI_var_list, each = 2), c("", "_combat")))]
+    } # end of `if (design_i == "longitudinal")`  
+    
+    if (design_i == "Cross-sectional"){
+
+      obj_combat = neuroCombat(dat = data_i[, ROI_var_list] %>% t(), mod = model.matrix(~ ns(age_years, df = 2) + sex_01, data=data_i),
+                             batch = data_i$site, eb = TRUE, verbose = FALSE)
+
+      
+      data_i[, paste0(ROI_var_list, "_combat")] = t(obj_combat$dat.combat)
+      
+      # reorder the columns
+      data_i = data_i[, c("study", "participant", "age_years", "sex_01", "site", paste0(rep(ROI_var_list, each = 2), c("", "_combat")))]
+    }
+      
+  }
+    combat_data = rbind(combat_data, data_i)
+}
+
+
+# write.csv(combat_data, "data/analysis_data/ROI/analysis_data_ROI_complete_case_combat.csv")
+
+```
+
+# Whole Brain Measures
+
+
+```{r}
+# the data used for initial submission
+analysis_data_ <- read_csv("data/analysis_data/whole_brain_measure/old_initial_submission/analysis_data_combat.csv")
+
+# ABCD release 5
+ABCD_release5_clean <- read_csv("data/analysis_data/ABCD_release5_clean.csv")
+
+var_list = c("participant", "study", "age_years", "sex_01", "dx", "site", "GMV_10000", "sGMV_10000", "WMV_10000")
+
+ABCD = ABCD_release5_clean[, var_list]
+
+# remove rows containing missing values
+ABCD = na.omit(ABCD)
+
+# longCombat
+ABCD_combat = longCombat(idvar = "participant", 
+                       timevar = "age_years", 
+                       batchvar = "site", 
+                       features = c("GMV_10000", "sGMV_10000", "WMV_10000"),
+                       formula = "ns(age_years, df = 2) + sex_01",
+                       ranef = "(1|participant)",
+                       data = ABCD,
+                       verbose = FALSE)
+        
+ABCD[, paste0(c("GMV_10000", "sGMV_10000", "WMV_10000"), "_combat")] = ABCD_combat$data_combat[, paste0(c("GMV_10000", "sGMV_10000", "WMV_10000"), ".combat")]
+        
+ABCD = ABCD[order(ABCD$participant, ABCD$age_years), ]
+
+# replace with ABCD release 5 after longCombat
+var_list = c("participant", "study", "age_years", "sex_01", "dx", "site", "GMV_10000", "sGMV_10000", "WMV_10000", paste0(c("GMV_10000", "sGMV_10000", "WMV_10000"), "_combat"))
+
+analysis_data_combat = subset(analysis_data_combat, !study == "ABCD")
+analysis_data_combat = rbind(analysis_data_combat[, var_list], ABCD[, var_list])
+
+write.csv(analysis_data_combat, "data/analysis_data/whole_brain_measure/new/analysis_data_whole_brain_combat.csv")
+
+# study info summary table
+study_info_whole_brain = sum_tab(analysis_data_combat) 
+write.csv(study_info_whole_brain, "data/analysis_data/whole_brain_measure/new/study_info_whole_brain.csv")
+```
+
+
+**Comparing the new and old data**:
+
+```{r}
+old =  readr::read_csv("data/analysis_data/whole_brain_measure/old_initial_submission/analysis_data_combat.csv")
+old$version = "old"
+
+analysis_data = readr::read_csv("data/analysis_data/whole_brain_measure/new/analysis_data_whole_brain_combat.csv")
+analysis_data$version = "new"
+temp = rbind(old[, c("participant", "study", "version")], analysis_data[, c("participant", "study", "version")])
+table1::table1(~ study | version, data = temp)
+
+# number of subjects from each study
+new_1 = analysis_data %>% group_by(study, participant) %>% slice_head(n = 1)
+old_1 = old %>% group_by(study, participant) %>% slice_head(n = 1)
+
+temp = rbind(old_1[, c("participant", "study", "version")], new_1[, c("participant", "study", "version")])
+table1::table1(~ study | version, data = temp)
+# paste0(old$study, old$participant) %>% unique %>% length
+# old$participant %>% unique %>% length
+# 
+# paste0(analysis_data$study, analysis_data$participant) %>% unique %>% length
+# 
+# old %>% apply(2, FUN = function(x){sum(is.na(x))})
+```
+
+
+
+## Global CT
+```{r}
+data_CT = read_csv("data/analysis_data/ROI/analysis_data_ROI_complete_case.csv")
+data_CT = data_CT[, c("participant", "study", "age_years", "sex_01", "dx", "site","GMV_10000", "CT")]
+
+# Combat / Long combat
+
+library(neuroCombat)
+library(longCombat)
+
+study_info_clean = read_csv("data/analysis_data/ROI/study_info_clean_ROI.csv")
+
+combat_data = NULL
+for (i in 1:nrow(study_info_clean)){
+  
+  study_i = study_info_clean$study[i]
+  design_i = study_info_clean$Design[i]
+  cat("Study:", as.character(study_i), "\n")
+  cat("    Design:", design_i, "\n")
+  # data
+  data_i = subset(data_CT, study == study_i)
+  data_i = data_i[order(data_i$participant, data_i$age_years),] # sort
+  ## generating a unique record indicator for merging combat outcome back
+  ## Some subjects may have two visits that are at the same age (i.e., the visit interval is too short).
+  # data_i$U_id = 1:nrow(data_i)
+  
+  if (length(unique(data_i$site)) == 1) {
+    cat("only 1 site in this dataset, skip. \n")
+    # the combat variable = the original variable
+    data_i[, "CT_combat"] = data_i[, "CT"] 
+    data_i = data_i[, c("study", "participant", "age_years", "sex_01", "site", "CT", "CT_combat")]
+  } else {
+      if (design_i == "Longitudinal") {
+        
+        obj_combat = longCombat(idvar = "participant", 
+                               timevar = "age_years", 
+                               batchvar = "site", 
+                               features = c("GMV_10000", "CT"),
+                               formula = "ns(age_years, df = 2) + sex_01",
+                               ranef = "(1|participant)",
+                               data = data_i,
+                               verbose = FALSE)
+        
+        data_i[, "CT_combat"] = obj_combat$data_combat[, "CT.combat"]
+        
+        data_i = data_i[order(data_i$participant, data_i$age_years), ]
+        
+      # reorder the columns
+      data_i = data_i[, c("study", "participant", "age_years", "sex_01", "site", "CT", "CT_combat")]
+    } # end of `if (design_i == "longitudinal")`  
+    
+    if (design_i == "Cross-sectional"){
+
+      obj_combat = neuroCombat(dat = data_i[, c("GMV_10000", "CT")] %>% t(), mod = model.matrix(~ ns(age_years, df = 2) + sex_01, data=data_i),
+                             batch = data_i$site, eb = TRUE, verbose = FALSE)
+      
+      temp =  t(obj_combat$dat.combat)
+      data_i[, "CT_combat"] = temp[, "CT"]
+      
+      # reorder the columns
+      data_i = data_i[, c("study", "participant", "age_years", "sex_01", "site", "CT", "CT_combat")]
+    }
+      
+  }
+    combat_data = rbind(combat_data, data_i)
+}
+
+write.csv(combat_data, "data/analysis_data/whole_brain_measure/new/CT/analysis_data_global_CT_combat.csv")
+```
+
+
+```{r}
+CT_study_info_clean = sum_tab(data_CT) 
+
+write.csv(CT_study_info_clean, "data/analysis_data/whole_brain_measure/new/CT/study_info_clean_global_CT.csv")
+```
+
+
+
+

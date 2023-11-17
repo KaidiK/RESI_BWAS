@@ -1,0 +1,237 @@
+---
+title: "BWAS-RESI R1: Evaluating the consistency CS-RESI"
+author: "Kaidi Kang"
+date: "2023-08-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(splines)
+library(geepack)
+library(RESI)
+library(readr)
+library(magrittr)
+library(parallel)
+library(pbmcapply)
+library(dplyr)
+```
+
+
+# Summary
+
+Evaluating the consistency for CS-RESI.
+
+```{r}
+analysis_data <- read_csv("data/analysis_data/whole_brain_measure/new/analysis_data_whole_brain_combat.csv") 
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+study_info_clean <- read_csv("data/analysis_data/whole_brain_measure/new/study_info_whole_brain.csv")
+study_info_clean %<>% as.data.frame
+
+
+Sys.time()
+set.seed(2023)
+
+# num of resampling 
+nboot = 1000
+num.cores = 10
+
+# study_name = "ABCD"
+# size = 100
+
+# the function conducts one sampling and return the effect size estimates in that bootstrap data
+consis_func = function(study_name, size){
+  
+  # study data
+  dat = subset(analysis_data, study == study_name)
+  
+  # 1. Longitudinal
+  # subject IDs 
+  uniq_ID = dat$participant %>% unique()
+  # resampling
+  samp_id = sample(uniq_ID, size = size, replace = TRUE)
+  boot_data = dat[unlist(lapply(samp_id, function(x) which(x == dat[, "participant"]))), ]
+  # assign new id
+  # boot_data %<>% group_by(participant) %>% mutate(new_id = cur_group_id()) # this is wrong!
+  boot_data$new_id = rep(1:length(samp_id),
+                           times = unlist(lapply(samp_id, function(x) length(which(x==dat[,"participant"]))))
+                         )
+
+  # sorting the data by id and age
+  boot_data = boot_data[order(boot_data$new_id, boot_data$age_years), ]
+  
+  # for sex effect (the ANOVA here for L-RESI is the Type 1 sequential ANOVA)
+  boot_fit_long_sex = geeglm(GMV_10000_combat ~ ns(age_years, df = 2) + sex_01, data = boot_data, id = new_id, corstr = "exchangeable")
+  boot_resi_long_sex = boot_fit_long_sex %>% resi_pe(data = boot_data)
+  # for age effect (the ANOVA here for L-RESI is the Type 1 sequential ANOVA)
+  boot_fit_long_age = geeglm(GMV_10000_combat ~ sex_01 + ns(age_years, df = 2), data = boot_data, id = new_id, corstr = "exchangeable")
+  boot_resi_long_age = boot_fit_long_age %>% resi_pe(data = boot_data)
+  
+  # 2. Cross-sectional
+  # randomly select one obs from each subject
+  boot_data_cs = boot_data %>% group_by(new_id) %>% slice_sample(n = 1)
+  boot_fit_cs = lm(GMV_10000_combat ~ ns(age_years, df = 2) + sex_01, data = boot_data_cs)
+  ## The ANOVA here is type 2 anova
+  boot_resi_cs = boot_fit_cs %>% RESI::resi_pe()
+  
+  # 3. Calculating Effect Sizes....
+  rv = NULL # return values
+  
+  # CS RESI for age (in longitudinal)
+  rv["CS_RESI_age"] = boot_resi_long_age$anova["ns(age_years, df = 2)", "CS-RESI"]
+  rv["L_RESI_age"] = boot_resi_long_age$anova["ns(age_years, df = 2)", "L-RESI"]
+  # regular RESI for age (in cross-sectional)
+  rv["cs_RESI_age"] = boot_resi_cs$anova["ns(age_years, df = 2)", "RESI"]
+
+  
+  # CS-RESI & L-RESI for sex (in longitudinal)
+  rv["CS_RESI_sex"] = boot_resi_long_sex$anova["sex_01", "CS-RESI"]
+  rv["L_RESI_sex"] = boot_resi_long_sex$anova["sex_01", "L-RESI"]
+  # regular RESI for sex (in cross-sectional)
+  rv["cs_RESI_sex"] = boot_resi_cs$anova["sex_01", "RESI"]
+  
+  # Cohen's d for sex in longitudinal
+  rv["d_sex_long"] = coef(boot_fit_long_sex)["sex_01"] / sqrt(vcov(boot_fit_long_sex)["sex_01", "sex_01"]) / sqrt(size)
+    # z_to_d(sign(coef(boot_fit_long)["sexMale"]) * sqrt(boot_resi_long$resi["sex", "X2"]), n = size)[1, "d"]
+  # Cohen's d for sex in cs
+  rv["d_sex_cs"] = coef(boot_fit_cs)["sex_01"] / sqrt(vcov(boot_fit_cs)["sex_01", "sex_01"]) / sqrt(size)
+    # F_to_d(sign(coef(boot_fit_cs)["sexMale"]) * boot_resi_cs$anova["sex", "F"],
+    #                                 df = 1,
+    #                                 df_error = boot_resi_cs$overall$Res.Df[2])[1, "d"]
+  # statistics for age in long study
+  rv["stat_age_long"] = boot_resi_long_age$anova["ns(age_years, df = 2)", "X2"]
+  # statistics for age in CS study
+  rv["stat_age_cs"] = boot_resi_cs$anova["ns(age_years, df = 2)", "F"]
+
+  # stat for sex in long study
+  rv["stat_sex_long"] = boot_resi_long_sex$anova["sex_01", "X2"]
+  # stat for sex in cs study
+  rv["stat_sex_cs"] = boot_resi_cs$anova["sex_01", "F"]
+  return(rv)
+} # end of function `consis_fun`
+
+
+
+
+for (study_name in study_names) {
+# for (study_name in "ABCD") {
+  print(study_name)
+  
+  # resample sizes
+  maxN = ifelse(study_info_clean$N[study_info_clean$study == study_name] < 2000, 2000, study_info_clean$N[study_info_clean$study == study_name])
+  Ns = round(seq(50, maxN, length.out = 50))
+  
+  # return values
+  df = data.frame(N = Ns, # sample sizes
+                  mean = NA, # the mean of the target ES across bootstraps
+                  median = NA,
+                  range_low = NA, # range
+                  range_high = NA,
+                  CI_99_low = NA, # 99% percentiles
+                  CI_99_high = NA,
+                  CI_95_low = NA, # 95% percentiles
+                  CI_95_high = NA)
+  rv = list(study = study_name,
+            nboot = nboot,
+            diff_CS_RESI_age = df, # mean difference between CS-RESI (adjusted RESI) in longitudinal and RESI in cross-sectional for age over bootstraps
+            diff_long_RESI_age = df,
+            diff_long_RESI_sex = df, # NEW: comparing the long RESI between long and CS studies.
+            diff_CS_RESI_sex = df, # for sex
+            diff_d_sex = df, # difference in Cohen's d for sex between longitudinal and cross-sectional
+            diff_stat_age = df,
+            diff_stat_sex = df
+                  )
+
+  for (size in Ns){
+    print(size)
+      
+    boot_val <-
+      pbmclapply(1:nboot, FUN = function(simInd, study_name, dat, size){
+        # temp_obj = tryCatch(consis_func(study_name, size), error = function(e) {rep(NA, 12)})
+        temp_obj = consis_func(study_name, size)
+        return(temp_obj)
+      }, 
+       study_name = study_name,
+       size = size
+      # , mc.cores = num.cores
+      ) 
+    boot_val = do.call(rbind, boot_val)
+    boot_val %<>% as.data.frame
+  
+    # return
+    # for RESI of age
+    # dom = mean(boot_val$cs_RESI_age)
+    dom = 1
+    diff = with(boot_val, (CS_RESI_age - cs_RESI_age)/dom)
+    rv$diff_CS_RESI_age[which(rv$diff_CS_RESI_age$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                       median(diff, na.rm = TRUE),
+                                                                 range(diff, na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                  )
+    # for RESI of age
+    # dom = mean(boot_val$cs_RESI_age)
+    dom = 1
+    diff = with(boot_val, (L_RESI_age - cs_RESI_age)/dom)
+    rv$diff_long_RESI_age[which(rv$diff_long_RESI_age$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                            median(diff, na.rm = TRUE),
+                                                                 range(diff, na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                 )                                                      
+    
+    # RESI for sex
+    # dom = mean(boot_val$cs_RESI_sex)
+    dom = 1
+    diff = with(boot_val, (CS_RESI_sex - cs_RESI_sex)/dom)
+    rv$diff_CS_RESI_sex[which(rv$diff_CS_RESI_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                        median(diff, na.rm = TRUE),
+                                                                 range(diff, na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                 )
+    # Cohen's d for sex
+    # dom = mean(boot_val$d_sex_cs)
+    dom = 1
+    diff = with(boot_val, (d_sex_long - d_sex_cs)/dom)
+    rv$diff_d_sex[which(rv$diff_d_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                            median(diff, na.rm = TRUE),
+                                                           range(diff, na.rm = TRUE),
+                                                           quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                           quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                           ) 
+    # NEW: comparing Long RESI in long and CS studies
+    # dom = mean(boot_val$cs_RESI_sex)
+    dom = 1
+    diff = with(boot_val, (L_RESI_sex - cs_RESI_sex)/dom)
+    rv$diff_long_RESI_sex[which(rv$diff_long_RESI_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                            median(diff, na.rm = TRUE),
+                                                                           range(diff, na.rm = TRUE),
+                                                                           quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                                           quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                           )
+    # NEW: comparing statistics in long and CS
+    diff = with(boot_val, stat_age_long - stat_age_cs)
+    rv$diff_stat_age[which(rv$diff_stat_age$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                  median(diff, na.rm = TRUE),
+                                                                 range(diff, na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                 )
+    diff = with(boot_val, stat_sex_long - stat_sex_cs)
+    rv$diff_stat_sex[which(rv$diff_stat_sex$N == size), -1 ] = c(mean(diff, na.rm = TRUE),
+                                                                 median(diff, na.rm = TRUE),
+                                                                 range(diff, na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.01, 0.99), na.rm = TRUE),
+                                                                 quantile(diff, probs = c(0.05, 0.95), na.rm = TRUE)
+                                                                 )  
+  }
+  saveRDS(rv, paste0("Results/consistency_CS_RESI_ABCD/GMV_resamp_", study_name, ".rds"))
+}
+
+Sys.time()
+```
+

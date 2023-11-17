@@ -1,0 +1,362 @@
+---
+title: "Part 8 - The effect sizes using cross-sectional or longitudinal designs in ABCD"
+author: "Kaidi Kang"
+date: "2023-11-01"
+output: html_document
+---
+
+```{r}
+library(readr)
+library(pbmcapply)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(RESI)
+library(geepack)
+library(splines)
+library(tidyr)
+```
+
+```{r}
+# function for bootstrapping subjects
+boot.samp <- function(data, id.var = NULL) {
+  params = as.list(match.call()[-1])
+  if (is.matrix(data)) data = as.data.frame(data)
+  if (is.null(id.var)) {
+    boot.ind = sample(1:nrow(data), replace = TRUE)
+    boot.data = data[boot.ind, ]
+  } else {
+    boot.ind = sample(unique(data[, id.var]), replace = TRUE)
+    boot.data = data[unlist(lapply(boot.ind, function(x) which(x == data[, id.var]))), ]
+    boot.data$bootid = rep(1:length(unique(data[, id.var])),
+                           unlist(lapply(boot.ind, function(x) length(which(x==data[,id.var])))))
+  }
+  return(boot.data)
+}
+```
+
+
+# Summary
+In this section, we evaluate the ESs & power in ABCD studies using the cross-sectional design (using baseline measures only) vs. using the longitudinal design (using the fulll dataset) without bootstrapping.
+
+# Analysis
+
+## Total GMV
+```{r}
+set.seed(2023)
+nboot = 1000
+
+var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+outcomes = c("GMV_10000_combat")
+
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            "bw",
+            # BMI
+            "BMI",
+            # # Handedness
+            "handedness"
+            )
+
+# x = "handedness"
+# x = var_list[1]
+output = NULL
+
+Sys.time()
+
+temp = pbmclapply(var_list, FUN = function(x){
+  # cat("X = ", x)
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+  y = c("GMV_10000_combat")
+
+  # CS analysis
+  data_bl = subset(dat_x, eventname == "Baseline")
+  fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_bl)")))
+  
+  resi_obj_bl = fit_bl %>% resi(data = data_bl, nboot = nboot) %>% suppressWarnings()
+  resi_bl = resi_obj_bl$anova[x, "RESI"]
+  resi_bl_ll = resi_obj_bl$anova[x, "2.5%"]
+  resi_bl_ul = resi_obj_bl$anova[x, "97.5%"]
+  p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
+  beta_bl = NA
+  beta_se_bl = NA
+  
+  ## Longitudinal analysis (point estimates)
+  ## 1. GEE
+  fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = dat_x, corstr = 'exchangeable', id = temp_id)")))
+  gee_resi_obj_full = fit_full_gee %>% resi(data = dat_x, overall = FALSE, coefficients = FALSE, nboot = nboot) %>% suppressWarnings()
+  gee_resi_full = gee_resi_obj_full$anova[x, "L-RESI"]
+  gee_resi_full_ll = gee_resi_obj_full$anova[x, "L 2.5%"]
+  gee_resi_full_ul = gee_resi_obj_full$anova[x, "L 97.5%"]
+  gee_p_val_full = gee_resi_obj_full$anova[x, "P(>|Chi|)"]
+  gee_beta_full = NA #summary(fit_full_gee)$coefficients[x, "Estimate"]
+  gee_beta_se_full = NA #summary(fit_full_gee)$coefficients[x, "Std.err"]
+  
+  ## 2. LMM
+  fit_full_lmm = eval(parse(text = paste0("lme4::lmer(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , "+ (1 | temp_id), data = dat_x)")))
+  lmm_resi_obj_full = fit_full_lmm %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE) %>% suppressWarnings()
+  lmm_resi_full = lmm_resi_obj_full$anova[x, "RESI"]
+  lmm_p_val_full = lmm_resi_obj_full$anova[x, "Pr(>Chisq)"]
+  lmm_beta_full = NA # summary(fit_full_lmm)$coefficients[x, "Estimate"]
+  lmm_beta_se_full = NA #summary(fit_full_lmm)$coefficients[x, "Std. Error"]
+  
+  output = rbind(output,
+                 data.frame(Y = y, X = x,
+                            # baseline analysis
+                            beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, resi_bl_ll = resi_bl_ll, resi_bl_ul = resi_bl_ul, 
+                            p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+                            # GEE w/ full data
+                            gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, gee_resi_full_ll = gee_resi_full_ll, gee_resi_full_ul = gee_resi_full_ul, 
+                            gee_p_val_full = gee_p_val_full, 
+                            # LMM w/ full data,
+                            lmm_beta_full = lmm_beta_full, lmm_beta_se_full = lmm_beta_se_full, lmm_resi_full = lmm_resi_full, 
+                            lmm_p_val_full = lmm_p_val_full,
+                            N_full = nobs(fit_full_gee))
+  )
+  
+  
+}
+, mc.cores = 11, mc.preschedule = FALSE
+)
+
+temp = do.call(rbind, temp)
+saveRDS(temp, paste0("Results/ABCD_CS_L_analysis/bl_and_full_data_analysis_GMV.rds"))
+  
+Sys.time()
+# it took 1hr and 20 mins
+```
+
+## Regional structural brain measures
+
+```{r}
+set.seed(2023)
+num_cores = 40
+var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+outcomes = c(paste0(ROI_outcomes, "_combat"))
+
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            "bw",
+            # BMI
+            "BMI",
+            # # Handedness
+            "handedness_impute"
+            )
+
+# var_list = "handedness_impute"
+# x = var_list[1]
+
+Sys.time()
+
+for (x in var_list){
+  output = NULL
+
+  cat("X = ", x, "\n")
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+
+  # y = outcomes[1]
+  temp = pbmclapply(outcomes, FUN = function(y){
+    # CS analysis
+    data_bl = subset(dat_x, eventname == "Baseline")
+    fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_bl)")))
+    
+    resi_obj_bl = fit_bl %>% resi_pe(data = data_bl)
+    resi_bl = resi_obj_bl$anova[x, "RESI"]
+    resi_bl_ll = resi_obj_bl$anova[x, "2.5%"]
+    resi_bl_ul = resi_obj_bl$anova[x, "97.5%"]
+    p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
+    beta_bl = NA #summary(fit_bl)$coefficients[x, "Estimate"]
+    beta_se_bl = NA #summary(fit_bl)$coefficients[x, "Std. Error"]
+    
+    ## Longitudinal analysis (point estimates)
+    ## 1. GEE
+    fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = dat_x, corstr = 'exchangeable', id = temp_id)")))
+    gee_resi_obj_full = fit_full_gee %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE)
+    gee_resi_full = gee_resi_obj_full$anova[x, "L-RESI"]
+    gee_resi_full_ll = NA # gee_resi_obj_full$anova[x, "L 2.5%"]
+    gee_resi_full_ul = NA # gee_resi_obj_full$anova[x, "L 97.5%"]
+    gee_p_val_full = gee_resi_obj_full$anova[x, "P(>|Chi|)"]
+    gee_beta_full = NA # summary(fit_full_gee)$coefficients[x, "Estimate"]
+    gee_beta_se_full = NA # summary(fit_full_gee)$coefficients[x, "Std.err"]
+    
+    ## 2. LMM
+    fit_full_lmm = eval(parse(text = paste0("lme4::lmer(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , "+ (1 | temp_id), data = dat_x)")))
+    lmm_resi_obj_full = fit_full_lmm %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE)
+    lmm_resi_full = lmm_resi_obj_full$anova[x, "RESI"]
+    lmm_p_val_full = lmm_resi_obj_full$anova[x, "Pr(>Chisq)"]
+    lmm_beta_full = NA #summary(fit_full_lmm)$coefficients[x, "Estimate"]
+    lmm_beta_se_full = NA #summary(fit_full_lmm)$coefficients[x, "Std. Error"]
+    
+    output = rbind(output, 
+                   data.frame(Y = y, X = x,
+                              # baseline analysis
+                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, resi_bl_ll = resi_bl_ll, resi_bl_ul = resi_bl_ul, 
+                              p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+                              # GEE w/ full data
+                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, gee_resi_full_ll = gee_resi_full_ll, gee_resi_full_ul = gee_resi_full_ul, 
+                              gee_p_val_full = gee_p_val_full, 
+                              # LMM w/ full data,
+                              lmm_beta_full = lmm_beta_full, lmm_beta_se_full = lmm_beta_se_full, lmm_resi_full = lmm_resi_full, 
+                              lmm_p_val_full = lmm_p_val_full,
+                              N_full = nobs(fit_full_gee))
+    )
+
+  # return(output)
+  }
+  , mc.cores = num_cores, mc.preschedule = FALSE
+  )
+  
+temp = do.call(rbind, temp)
+saveRDS(temp, paste0("Results/ABCD_CS_L_analysis/bl_and_full_data_analysis_ROI_", x, ".rds"))
+  
+}
+
+Sys.time()
+
+```
+
+## Functional connectivity
+```{r}
+var_info <- readRDS("data/analysis_data/ABCD_FC_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            "bw",
+            # BMI
+            "BMI",
+            # # Handedness
+            "handedness_impute"
+            )
+
+# x = var_list[1]
+
+temp = pbmclapply(var_list, FUN = function(x){
+                  cat("X = ", x, "\n")
+                  dat_x = readRDS(paste0("data/analysis_data/ABCD_FC_combat/FC_data_", x, "_combat.rds")) 
+                  dat_x = na.omit(dat_x)
+                  
+                  outcomes = dat_x %>% select(starts_with("L_"), starts_with("R_")) %>% colnames()
+                  output = NULL
+                  # y = outcomes[1]
+                  for (y in outcomes){
+                    # CS analysis
+                    data_bl = subset(dat_x, eventname == "baseline_year_1_arm_1")
+                    fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ns(mean_FD, df = 3) + ", x , ", weights = frame_count, data = data_bl)")))
+                    
+                    resi_obj_bl = fit_bl %>% resi_pe(data = data_bl, overall = FALSE) %>% suppressWarnings()
+                    resi_bl = resi_obj_bl$anova[x, "RESI"]
+                    resi_bl_ll = NA
+                    resi_bl_ul = NA
+                    
+                    p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
+                    beta_bl = NA
+                    beta_se_bl = NA
+                
+                    ## Longitudinal analysis
+                    ## 1. GEE
+                    fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ns(mean_FD, df = 3) + ", x , ", data = dat_x, corstr = 'exchangeable', weights = frame_count, id = temp_id)")))
+                    gee_resi_obj_full = fit_full_gee %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE)  %>% suppressWarnings()
+                    gee_resi_full = gee_resi_obj_full$anova[x, "L-RESI"] 
+                    gee_resi_full_ll = NA
+                    gee_resi_full_ul = NA
+                    gee_p_val_full = gee_resi_obj_full$anova[x, "P(>|Chi|)"]
+                    gee_beta_full = NA
+                    gee_beta_se_full = NA
+                    
+                    ## 2. LMM
+                    fit_full_lmm = eval(parse(text = paste0("lme4::lmer(formula = ", y, "~ sex_01 + ns(age_years, 2) +  ns(mean_FD, df = 3) + ", x , "+ (1 | temp_id), weights = frame_count, data = dat_x)")))
+                    lmm_resi_obj_full = fit_full_lmm %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE, vcovfunc = vcov)  %>% suppressWarnings()
+                    lmm_resi_full = lmm_resi_obj_full$anova[x, "RESI"]
+                    lmm_p_val_full = lmm_resi_obj_full$anova[x, "Pr(>Chisq)"]
+                    lmm_beta_full = NA 
+                    lmm_beta_se_full = NA
+                    
+                    output = rbind(output,
+                                   data.frame(Y = y, X = x,
+                                              # baseline analysis
+                                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, resi_bl_ll = resi_bl_ll, resi_bl_ul = resi_bl_ul, 
+                                              p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+                                              # GEE w/ full data
+                                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, gee_resi_full_ll = gee_resi_full_ll, gee_resi_full_ul = gee_resi_full_ul, 
+                                              gee_p_val_full = gee_p_val_full, 
+                                              # LMM w/ full data,
+                                              lmm_beta_full = lmm_beta_full, lmm_beta_se_full = lmm_beta_se_full, lmm_resi_full = lmm_resi_full, 
+                                              lmm_p_val_full = lmm_p_val_full,
+                                              N_full = nobs(fit_full_gee))
+                                   )
+                    
+                  }
+                  return(output)
+            
+  
+}
+, mc.cores = 10
+)
+
+  
+temp = do.call(rbind, temp)
+
+saveRDS(temp, "Results/ABCD_CS_L_analysis/FC_results_bl_and_full_data_analyses.rds")
+```
+
+
+

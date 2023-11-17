@@ -1,0 +1,1490 @@
+---
+title: "Part 6: Sampling schemes in ABCD on other covariets"
+author: "Kaidi Kang"
+date: "2023-09-05"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(readr)
+library(cowplot) # for plot_grid & get_legend
+library(pbmcapply)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(RESI)
+library(geepack)
+library(splines)
+library(tidyr)
+library(table1)
+```
+
+# Summary
+
+In this part, we evaluate the effects of the sampling schemes on the associations between other non-brain covariaets and structual brain measures (e.g., total GMV, regional GMV and CT) using ABCD study. We will just focus on the scenario where we sample 2-measurement per-subject.
+
+```{r}
+ABCD = readr::read_csv("data/analysis_data/ABCD_release5.csv")
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+```
+
+**Covariates:**
+
++ NIHTB (10 measures)
++ CBCL: total problem CBCL syndrome scale
++ birthweight
++ Handedness
+
+**Outcomes:**
+
++ Global brain measures: GMV, sGMV, WMV
++ Regional brain measures
+
+
+**Exclusion criteria: **
+
++ subjects without baseline records
++ records with missing age, and/or sex info.
++ records with missing GMV, sGMV, WMV and ROI outcomes
+  * A record will have all of them missing at the same time or none of them missing. 
++ for the cognitive measures that are analyzed longitudinally, only the subjects with the baseline measures and at least one follow-up are included.
++ for the cognitive measures with heavy missing (i.e., Dimensional Change Card Sort Test, Cognition Fluid Composite, and Cognition Total Composite Score), only the baselinse records were used. 
+
+**Notes: **
+
++ a record will have either all 3 of GMV, sGMV AND WMV missing or none of them missing.
++ a record will have all ROI outcomes AND the whole brain measures missing at the same time!
+
+
+```{r, eval = FALSE}
+dat = ABCD %>% select(src_subject_id, eventname, age_years, sex_01, GMV, sGMV, WMV, site, 
+                      # CBCL
+                      starts_with("cbcl"),
+                      # birthweight,
+                      bw,
+                      # BMI
+                      BMI,
+                      # Handedness
+                      ehi_y_ss_scoreb,
+                      # NIH-TB
+                      starts_with("nihtbx"),
+                      # Regional brain outcomes
+                      starts_with("lh_Vol"), starts_with("rh_Vol"), starts_with("lh_CT"), starts_with("rh_CT")
+                      )
+
+
+
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+# No need to focus on CN subjects
+# dat = subset(dat, dx == "CN")
+
+# Restrict to the records that have at least 1 non-missing NIHTBX cognitive measures
+## num of missing cognitive masures
+# nihtbx_list = colnames(dat)[grep('nihtbx', colnames(dat))]
+# dat$num_miss = is.na(dat[, nihtbx_list]) %>% rowSums()
+# dat = subset(dat, num_miss < length(nihtbx_list))
+
+# remove the records with missing age and/or sex:
+dat = subset(dat, !is.na(age_years))
+dat = subset(dat, !is.na(sex_01))
+
+
+# number of missing whole brain measure
+dat$miss_whole_brain = is.na(dat[, c("GMV", "sGMV", "WMV")]) %>% rowSums()
+dat$miss_ROI = is.na(dat[, ROI_outcomes]) %>% rowSums
+
+# remove the records with missing whole or regional brain measures
+dat = subset(dat, miss_whole_brain == 0)
+dat = subset(dat, miss_ROI == 0)
+
+
+# data clean: 
+# BMI: the values outside of the 1% lower and upper quantiles are considered mis-input and replaced with missing
+thres = quantile(dat$BMI, probs = c(0.01, 0.99), na.rm = TRUE)
+dat$BMI = ifelse(dat$BMI < thres[1], NA, dat$BMI)
+dat$BMI = ifelse(dat$BMI > thres[2], NA, dat$BMI)
+
+# Handedness: Last observed carried forward
+dat %<>% arrange(src_subject_id, age_years)
+dat$handedness_impute = dat$ehi_y_ss_scoreb
+dat <- dat %>% group_by(src_subject_id) %>% fill(handedness_impute, .direction = "down")
+
+dat$handedness = factor(dat$handedness_impute, levels = 1:3, labels = c("Right-handed", "Not right-handed", "Not right-handed"))
+
+
+# Labels
+dat$eventname %<>% factor(levels = c("baseline_year_1_arm_1", "2_year_follow_up_y_arm_1", "4_year_follow_up_y_arm_1"), labels = c("Baseline", "2-year follow-up", "4-year follow-up"))
+
+label(dat$nihtbx_picvocab_fc) = "Picture Vocabulary Test"
+label(dat$nihtbx_flanker_fc) = "Flanker Inhibitory Control and Attention Test"
+label(dat$nihtbx_list_fc) = "List Sorting Working Memory Test"
+label(dat$nihtbx_cardsort_fc) = "Dimensional Change Card Sort Test"
+label(dat$nihtbx_pattern_fc) = "Pattern Comparison Processing Speed Test"
+label(dat$nihtbx_picture_fc) = "Picture Sequence Memory Test"
+label(dat$nihtbx_reading_fc) = "Oral Reading Recognition Test"
+label(dat$nihtbx_fluidcomp_fc) = "Cognition Fluid Composite"
+label(dat$nihtbx_cryst_fc) = "Crystallized Composite"
+label(dat$nihtbx_totalcomp_fc) = "Cognition Total Composite Score"
+
+label(dat$cbcl_scr_syn_totprob_t) = "Total Problem CBCL Syndrome Scale"
+label(dat$bw) = "Birth Weight"
+label(dat$BMI) = "BMI"
+label(dat$handedness) = "Handedness"
+
+# visit variable
+dat$visit = NA 
+dat$visit[dat$eventname == "Baseline"] = 1
+dat$visit[dat$eventname == "2-year after baseline"] = 3
+dat$visit[dat$eventname == "4-year after baseline"] = 5
+
+# generate a new "numeric" id
+# Note: geeglm has problem with ID values containing characters
+dat %<>% group_by(src_subject_id) %>% mutate(temp_id = cur_group_id()) 
+
+# remove the subjects without baseline records
+dat = dat %>% group_by(src_subject_id) %>% mutate(miss_bl = !("Baseline" %in% eventname))
+dat = subset(dat, !miss_bl)
+
+saveRDS(dat, "data/analysis_data/ABCD_release5_resamp_ROI_whole_brain.rds")
+```
+
+
+## Descriptive table
+```{r, eval = FALSE}
+
+dat = readRDS("data/analysis_data/ABCD_release5_resamp_ROI_whole_brain.rds")
+
+
+my.render.cont <- function(x) {
+    with(stats.default(x), 
+         c("",
+           
+          "Mean (SD)" = sprintf("%s (%s)",
+                                round_pad(MEAN, 1),
+                                round_pad(SD, 1)),
+         
+          "Median (Min, Max)" = sprintf("%s (%s, %s)",
+                                       round_pad(MEDIAN, 1), 
+                                       round_pad(MIN, 1), 
+                                       round_pad(MAX, 1)),
+          "N" = sprintf("%s",
+                        N))
+    )
+}
+
+
+table1(~ nihtbx_picvocab_fc + nihtbx_flanker_fc + nihtbx_list_fc + nihtbx_list_fc + nihtbx_cardsort_fc + nihtbx_pattern_fc + nihtbx_picture_fc + nihtbx_reading_fc + nihtbx_fluidcomp_fc + nihtbx_cryst_fc + nihtbx_totalcomp_fc + 
+         cbcl_scr_syn_totprob_t + cbcl_scr_syn_anxdep_t + cbcl_scr_syn_withdep_t + cbcl_scr_syn_somatic_t + cbcl_scr_syn_social_t + cbcl_scr_syn_thought_t + cbcl_scr_syn_attention_t + cbcl_scr_syn_rulebreak_t +  cbcl_scr_syn_aggressive_t + cbcl_scr_syn_internal_t + cbcl_scr_syn_external_t + 
+         bw + BMI + handedness| eventname, data = dat, reder = my.render.cont)
+```
+
+## Data preparation & Harmonization (Combat/LongCombat)
+
+For each covariate. 
+
+```{r, eval = FALSE}
+# ------ Variable List -----------
+# cognitive variable list
+var_long = c(
+  # NIH-TB
+  "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+  "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+  "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+  "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+  "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+  "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+  "nihtbx_cryst_fc", # Crystallized Composite
+  # CBCL:
+  c("cbcl_scr_syn_anxdep_t", # Anxious/Depressed CBCL Syndrome Scale
+   "cbcl_scr_syn_withdep_t", # WithDep (withdrawn or depression??)
+   "cbcl_scr_syn_somatic_t", # Somatic CBCL Syndrome Scale (t-score)
+   "cbcl_scr_syn_social_t", # Social CBCL Syndrome Scale (t-score)
+   "cbcl_scr_syn_thought_t", # Thought CBCL Syndrome Scale (t-score)
+   "cbcl_scr_syn_attention_t", # attention
+   "cbcl_scr_syn_rulebreak_t", # rule-breaking
+   "cbcl_scr_syn_aggressive_t", # aggressive
+   "cbcl_scr_syn_internal_t", # internal
+   "cbcl_scr_syn_external_t", # external
+   "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+
+   "cbcl_scr_dsm5_depress_t", # depress
+   "cbcl_scr_dsm5_anxdisord_t", # anxious/disorder??
+   "cbcl_scr_dsm5_somaticpr_t", # SomaticPr CBCL DSM5 Scale (t-score)
+   "cbcl_scr_dsm5_adhd_t", # ADHD CBCL DSM5 Scale (t-score)
+   "cbcl_scr_dsm5_opposit_t", # Opposit CBCL DSM5 Scale (t-score)
+   "cbcl_scr_dsm5_conduct_t", # Conduct CBCL DSM5 Scale (t-score)
+   "cbcl_scr_07_sct_t",  # Sluggish Cognitive Tempo (SCT) CBCL Scale2007 Scale (t-score)
+   "cbcl_scr_07_ocd_t", # Obsessive-Compulsive Problems (OCD) CBCL Scale2007 Scale (t-score)
+   "cbcl_scr_07_stress_t"),
+  # birthweight,
+  "bw",
+  # BMI
+  "BMI",
+  # Handedness
+  "handedness"
+  )
+
+var_long_lab = c("Picture Vocabulary",
+                 "List Sorting Working Memory", 
+                 "Flanker Inhibitory Control and Attention",
+                 "Pattern Comparison Processing Speed",
+                 "Picture Sequence Memory",
+                 "Oral Reading Recognition",
+                 "Crystallized Composite",
+                 "Total Problem CBCL Syndrome Scale",
+                 "Birth Weight",
+                 "BMI",
+                 "Handedness")
+
+# the variables NOT having enough 2nd-year follow-ups
+var_cs = c("nihtbx_cardsort_fc", # Dimensional Change Card Sort Test Ages 8-11 v2.0
+           "nihtbx_fluidcomp_fc", # Cognition Fluid Composite
+           "nihtbx_totalcomp_fc" # Cognition Total Composite Score
+          )
+var_cs_lab = c("Dimensional Change Card Sort",
+               "Cognition Fluid Composite",
+               "Cognition Total Composite Score")
+
+var_info = rbind(data.frame(var = var_long, design = "L"),
+                 data.frame(var = var_cs, design = "CS"))
+
+
+saveRDS(var_info, "data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+```
+
+**Long Combat**:
+
+```{r, eval = FALSE}
+# -------- data ----------
+dat = readRDS("data/analysis_data/ABCD_release5_resamp_ROI_whole_brain.rds")
+var_info <- readRDS("~/RESI/longitudinal/data_analysis/1st_revision/data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+
+nihtbx_list = colnames(dat)[grep('nihtbx', colnames(dat))]
+
+dat$GMV_10000 = dat$GMV / 10000
+dat$sGMV_10000 = dat$sGMV / 10000
+dat$WMV_10000 = dat$WMV / 10000
+
+
+# ------- Combat with respect to each covariate 
+
+# var_list = var_info$var[var_info$design == "L"]
+
+var_list = c("cbcl_scr_syn_anxdep_t", # Anxious/Depressed CBCL Syndrome Scale
+              "cbcl_scr_syn_withdep_t", # WithDep (withdrawn or depression??)
+              "cbcl_scr_syn_somatic_t", # Somatic CBCL Syndrome Scale (t-score)
+              "cbcl_scr_syn_social_t", # Social CBCL Syndrome Scale (t-score)
+              "cbcl_scr_syn_thought_t", # Thought CBCL Syndrome Scale (t-score)
+              "cbcl_scr_syn_attention_t", # attention
+              "cbcl_scr_syn_rulebreak_t", # rule-breaking
+              "cbcl_scr_syn_aggressive_t", # aggressive
+              "cbcl_scr_syn_internal_t", # internal
+              "cbcl_scr_syn_external_t", # external
+              "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+              
+              "cbcl_scr_dsm5_depress_t", # depress
+              "cbcl_scr_dsm5_anxdisord_t", # anxious/disorder??
+              "cbcl_scr_dsm5_somaticpr_t", # SomaticPr CBCL DSM5 Scale (t-score)
+              "cbcl_scr_dsm5_adhd_t", # ADHD CBCL DSM5 Scale (t-score)
+              "cbcl_scr_dsm5_opposit_t", # Opposit CBCL DSM5 Scale (t-score)
+              "cbcl_scr_dsm5_conduct_t", # Conduct CBCL DSM5 Scale (t-score)
+              "cbcl_scr_07_sct_t",  # Sluggish Cognitive Tempo (SCT) CBCL Scale2007 Scale (t-score)
+              "cbcl_scr_07_ocd_t", # Obsessive-Compulsive Problems (OCD) CBCL Scale2007 Scale (t-score)
+              "cbcl_scr_07_stress_t")
+
+x = var_list[1]
+for (x in var_list){
+  
+  cat("- Covariate:", x, "\n")
+  
+  design_x = var_info$design[which(var_info$var == x)]
+  cat("   - Design:", design_x, "\n")
+  
+  # get the data 
+  dat_x = dat %>% select(src_subject_id, temp_id, eventname, age_years, sex_01, site, eval(x) , GMV_10000, sGMV_10000, WMV_10000,  
+                      starts_with("lh_Vol"), starts_with("rh_Vol"), starts_with("lh_CT"), starts_with("rh_CT")
+                      )
+  # data clean -----
+  ## remove rows missing values
+  dat_x = na.omit(dat_x)
+  
+  # ---- Longitudinal: LongCombat & sampling weights ------
+  
+  # longComBat
+  cat("   - LongCombat...\n")
+  dat_x %<>% arrange(temp_id, age_years)
+  dat_x %<>% as.data.frame
+  combat_obj = longCombat::longCombat(idvar = "temp_id", 
+                                     timevar = "age_years", 
+                                     batchvar = "site", 
+                                     features = c("GMV_10000", "sGMV_10000", "WMV_10000", ROI_outcomes),
+                                     formula = paste0("ns(age_years, df = 2) + sex_01 + ", x),
+                                     ranef = "(1|temp_id)",
+                                     data = dat_x,
+                                     verbose = TRUE)   
+  dat_x[, paste0(c("GMV_10000", "sGMV_10000", "WMV_10000", ROI_outcomes), "_combat")] = combat_obj$data_combat[, paste0(c("GMV_10000", "sGMV_10000", "WMV_10000", ROI_outcomes), ".combat")]
+  
+  
+  saveRDS(dat_x, paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+}
+
+Sys.time()
+
+
+
+```
+
+
+**Combat**:
+
+```{r, eval= FALSE}
+dat = readRDS("data/analysis_data/ABCD_release5_resamp_ROI_whole_brain.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+
+nihtbx_list = colnames(dat)[grep('nihtbx', colnames(dat))]
+
+dat$GMV_10000 = dat$GMV / 10000
+dat$sGMV_10000 = dat$sGMV / 10000
+dat$WMV_10000 = dat$WMV / 10000
+
+
+# ------- Combat with respect to each covariate 
+
+for (x in var_info$var[var_info$design == "CS"]){
+
+  cat("- Covariate:", x, "\n")
+  
+  design_x = var_info$design[which(var_info$var == x)]
+  cat("   - Design:", design_x, "\n")
+  
+  # get the data 
+  dat_x = dat %>% select(src_subject_id, temp_id, eventname, age_years, sex_01, site, eval(x) , GMV_10000, sGMV_10000, WMV_10000,  
+                      starts_with("lh_Vol"), starts_with("rh_Vol"), starts_with("lh_CT"), starts_with("rh_CT")
+                      )
+  # data clean -----
+  ## remove rows missing values
+  dat_x = na.omit(dat_x)
+  
+  ## if "CS" NIH-TB measure: only keep the baseline records
+  if(design_x == "CS") {dat_x = subset(dat_x, eventname == "Baseline")}
+
+  # ------- CS: Combat & sampling weights & analysis ----------
+  
+  if (design_x == "CS"){
+    # ComBat -------
+    cat("   - Combat...\n")
+    dat_x %<>% arrange(temp_id)
+    dat_x %<>% as.data.frame
+    
+    combat_obj = neuroCombat::neuroCombat(dat = dat_x[, c("GMV_10000", "sGMV_10000", "WMV_10000", ROI_outcomes)] %>% t(), 
+                                        mod = eval(parse(text = paste0("model.matrix(~ ns(age_years, df = 2) + sex_01 +", x , ", data = dat_x)"))),
+                                        batch = dat_x$site, eb = TRUE, mean.only = TRUE, verbose = TRUE)
+    dat_x[, paste0(c("GMV_10000", "sGMV_10000", "WMV_10000", ROI_outcomes), "_combat")] = t(combat_obj$dat.combat)
+  }    
+    
+  saveRDS(dat_x, paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+
+}
+
+Sys.time()
+
+
+```
+
+### Descriptive: the correlation between the baseline and the change of the covariate
+
+```{r, eval = FALSE}
+# plot the correlation between change of covariate and baseline 
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            # "bw",
+            # BMI
+            "BMI"
+            # # Handedness
+            # "handedness"
+            )
+
+p = 0.025
+for (x in var_list){
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+  
+  dat_x %<>% select(src_subject_id, temp_id, eventname, age_years, sex_01, site, eval(x) )
+  dat_x$X = dat_x[, x]
+  dat_x_bl = subset(dat_x, eventname == "Baseline")
+  colnames(dat_x_bl) = c("src_subject_id", "temp_id", paste0(colnames(dat_x_bl)[-c(1:2)], "_bl"))
+  dat_x_bl %<>% arrange(temp_id, X_bl)
+  dat_x %<>% arrange(src_subject_id, X)
+  dat_x = merge(dat_x, dat_x_bl, by = "temp_id", all = TRUE)
+
+  # calculate change from baseline
+  dat_x$D = dat_x$X - dat_x$X_bl
+  
+  # removing records with missing D (i.e., those with missing baseline records)
+  dat_x = subset(dat_x, !is.na(dat_x$D))
+  # remove baseline vs baseline
+  dat_x = subset(dat_x, eventname != "Baseline")
+  
+  
+  q_bl_ll = quantile(dat_x$X_bl, probs = c(p)) 
+  q_bl_ul = quantile(dat_x$X_bl, probs = c(1-p)) 
+  q_D_ll = quantile(dat_x$D, probs = c(p)) 
+  q_D_ul = quantile(dat_x$D, probs = c(1-p)) 
+  plot_x = ggplot(data = dat_x, aes(x = D, y = X_bl)) + geom_point() + geom_smooth() + labs(title = x) + 
+    geom_abline(intercept = q_bl_ll, slope = 0, linetype = "dashed", color = "red") +
+    geom_abline(intercept = q_bl_ul, slope = 0, linetype = "dashed", color = "red") +
+    geom_vline(xintercept = q_D_ll, linetype = "dashed", color = "red") +
+    geom_vline(xintercept = q_D_ul, linetype = "dashed", color = "red") 
+  
+  print(plot_x)
+  
+}
+
+```
+
+
+
+## Sampling schemes
+
+### Longitudinal measures (except handedness)
+
+```{r}
+# ----- Sampling function -------
+# data = dat_x
+# bl_scheme = 2
+# D_scheme = 999
+# samp_size = 500
+
+# For longitudinal NIHTBX
+
+samp_func_long = function(data, bl_scheme, D_scheme, samp_size){
+  
+  probs = data$resamp_prob_flat * (data$bl_resamp_prob_U)^(bl_scheme == 1) * (data$bl_resamp_prob_bell)^(bl_scheme == 2) * (data$D_resamp_prob_U)^(D_scheme == 1) * (data$D_resamp_prob_bell)^(D_scheme == 2)
+
+  boot_id = sample(1:nrow(data), size = samp_size, replace = TRUE, prob = probs )
+
+  outcomes = c("GMV_10000_combat", "sGMV_10000_combat", "WMV_10000_combat", paste0(ROI_outcomes, "_combat"))
+  
+  boot_data = lapply(1:length(boot_id), function(i) {
+      id = boot_id[i]
+      select_dat = data[id, ]
+      # baseline
+      v1 = select_dat[, c("temp_id", "eventname_bl", "age_years_bl", "sex_01", "D", paste0(c(x, outcomes), "_bl")  )]
+      # follow-up
+      v2 = select_dat[, c("temp_id", "eventname", "age_years", "sex_01", "D", x, outcomes )]
+      
+      colnames(v1) = NA
+      colnames(v2) = NA
+      subj_dat = rbind(v1, v2)
+      
+      colnames(subj_dat) = c("temp_id", "eventname", "age_years", "sex_01", "D", x, outcomes  )
+      
+      subj_dat$new_temp_id = i
+      subj_dat$new_visit = 1:2
+      return(subj_dat)
+    })
+  boot_data = do.call(rbind, boot_data)
+  boot_data %<>% arrange(new_temp_id, new_visit)
+  # table(boot_data$temp_id) %>% sort(decreasing = TRUE)
+  
+  # ANALYSIS
+  ## mean of baseline covariate
+  mean_bl_X = boot_data[boot_data$new_visit == 1, x] %>% mean()
+  ## SD of baseline covariate
+  sd_bl_X = boot_data[boot_data$new_visit == 1, x] %>% sd()
+  ## mean of abs(D_covairte)
+  mean_D_X = boot_data$D[boot_data$new_visit != 1] %>% abs() %>% mean()
+  ## SD of D_age
+  sd_D_X = boot_data$D[boot_data$new_visit != 1] %>% sd()
+  
+  # total variance of X
+  sigma2_X = var(boot_data[, x])
+  # subject-specific mean of X
+  boot_data %<>% group_by(new_temp_id) %>% mutate(bar_x_i = mean(!!as.name(x))) %>% ungroup() %>% as.data.frame
+  bar_x = boot_data %>% summarise(bar_x = mean(!!as.name(x))) %>% as.numeric
+  # between-subject var of X
+  sigma2_X_b = mean((boot_data$bar_x_i - bar_x)^2)
+  # within-subj var of X
+  sigma2_X_w = mean((boot_data[, x] - boot_data$bar_x_i)^2)
+  
+  # derive the baseline value and the change from baseline
+  boot_data$X = boot_data[, x]
+  boot_data %<>% group_by(new_temp_id) %>% mutate(X_bl = X[new_visit == 1])
+  boot_data$X_D = with(boot_data, X - X_bl)
+
+  # ES of covarites
+  rv = NULL
+   # y = outcomes[1]
+  for (y in outcomes){
+    # m = 2
+    ## GEE
+    boot_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = boot_data, corstr = 'exchangeable', id = new_temp_id)")))
+    gee_resi = boot_gee %>% resi_pe(data = boot_data)
+    gee_CS_resi = gee_resi$anova[x, 'CS-RESI'] # this is type 1 sequential anova
+    gee_L_resi = gee_resi$anova[x, 'L-RESI']
+    gee_p_val = gee_resi$anova[x, 'P(>|Chi|)']
+    beta = coefficients(boot_gee)[x]
+    beta_se = summary(boot_gee)$coefficients[x, "Std.err"]
+    #rho
+    rho = summary(boot_gee)$corr$Estimate
+    # var of error terms
+    resid_var = boot_gee$residuals %>% var
+    
+    # LMER
+    # boot_lmer = eval(parse(text = paste0("lme4::lmer(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , "+ (1 | new_temp_id), data = boot_data)")))
+    # lmer_resi = boot_lmer %>% resi_pe(data = boot_data)
+    # lmer_L_resi = lmer_resi$anova[x, "RESI"]
+    
+    if (x == "bw"){
+      beta_w = NA
+      beta_w_se = NA
+      L_resi_w = NA
+      p_val_w = NA
+      beta_b = NA
+      beta_b_se = NA
+      L_resi_b = NA
+      p_val_b = NA
+    } else{
+      # CS and L effects after controlling for age and sex
+      ## 1. Within-subject effect.
+      ## !!NOTE: this is type 1 sequential anova. So only the statistics of last term tested equals the statistics from Type 2 ANOVA. So 2 models were fitted. 
+      boot_gee_CS_L = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + X_bl + X_D, data = boot_data, corstr = 'exchangeable', id = new_temp_id)")))
+      gee_resi_CS_L = boot_gee_CS_L %>% resi_pe(data = boot_data, overall = FALSE)
+      # within-subject effects
+      beta_w = coefficients(boot_gee_CS_L)["X_D"]
+      beta_w_se = summary(boot_gee_CS_L)$coefficients["X_D", "Std.err"]
+      L_resi_w = gee_resi_CS_L$anova["X_D", "L-RESI"]
+      p_val_w = gee_resi_CS_L$anova["X_D", 'Pr(>Chisq)']
+      
+      # 2. Between-subject effects
+      boot_gee_L_CS = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + X_D + X_bl, data = boot_data, corstr = 'exchangeable', id = new_temp_id)")))
+      gee_resi_L_CS = boot_gee_L_CS %>% resi_pe(data = boot_data, overall = FALSE)
+      # between-subject effects
+      beta_b = coefficients(boot_gee_L_CS)["X_bl"]
+      beta_b_se = summary(boot_gee_L_CS)$coefficients["X_bl", "Std.err"]
+      ## L-RESI for between-subject effects
+      L_resi_b = gee_resi_L_CS$anova["X_bl", "L-RESI"]
+      p_val_b = gee_resi_L_CS$anova["X_bl", 'Pr(>Chisq)']
+    }
+    
+    # m = 1 (only using baseline observations)
+    boot_data_bl = subset(boot_data, new_visit == 1)
+    boot_glm = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = boot_data_bl)")))
+    # boot_glm = eval(parse(text = paste0("glm(formula = ", y, "~ ", x , ", data = boot_data_bl)")))
+    glm_resi = boot_glm %>% resi_pe(data = boot_data_bl)
+    resi_m1 = glm_resi$anova[x, 'RESI'] 
+    beta_m1 = coefficients(boot_glm)[x]
+    beta_m1_se = summary(boot_glm)$coefficients[x, "Std. Error"]
+    p_val_m1 = glm_resi$anova[x, 'Pr(>Chisq)']
+    
+    rv = rbind(rv,
+               data.frame(Y = y,
+                          X = x,
+                          bl_scheme = bl_scheme,
+                          D_scheme = D_scheme,
+                          # m = 2
+                          # GEE
+                          gee_CS_resi = gee_CS_resi,
+                          gee_L_resi = gee_L_resi,
+                          mean_bl_X = mean_bl_X,
+                          sd_bl_X = sd_bl_X,
+                          mean_abs_D_X = mean_D_X,
+                          sd_D_X = sd_D_X,
+                          sigma2_X = sigma2_X,
+                          sigma2_X_b = sigma2_X_b,
+                          sigma2_X_w = sigma2_X_w,
+                          p_val = gee_p_val,
+                          rho = rho,
+                          resid_var = resid_var,
+                          beta = beta,
+                          beta_se = beta_se,
+                          # LMER
+                          lmer_L_resi = NA,
+                          # CS and L effect, separately
+                          beta_b = beta_b,
+                          beta_b_se = beta_b_se,
+                          L_resi_b = L_resi_b,
+                          beta_w = beta_w,
+                          beta_w_se = beta_w_se,
+                          L_resi_w = L_resi_w,
+                          # m = 1
+                          resi_m1 = resi_m1,
+                          beta_m1 = beta_m1,
+                          beta_m1_se = beta_m1_se,
+                          p_val_m1 = p_val_m1))
+  }
+  return(rv)
+}
+
+```
+
+
+
+```{r}
+# Longitudinal Measures
+# !for everyone except handedness!
+
+# ------- Sampling schemes ----------
+
+Ns = 500
+nsim = 100
+
+Sys.time()
+set.seed(2023)
+
+var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+
+
+output = NULL
+
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            "bw",
+            # BMI
+            "BMI"
+            # # Handedness
+            # "handedness"
+            )
+
+var_list = c("bw", "BMI")
+# x = var_list[1]
+
+for (x in var_list){ 
+  
+  cat("- Covariate:", x, "\n")
+  
+  design_x = var_info$design[which(var_info$var == x)]
+  cat("   - Design:", design_x, "\n")
+  
+  # between-subject resampling scheme.
+  bl_schemes = c(1:2) # 0= uniform; 1 = U shaped (larger var); 2 = bell-shaped (smaller var)
+  D_schemes = c(1:2)
+  num.cores = 30
+  
+  if (x %in% c("bw")) D_schemes = 999 # for this variable and "handedness", we only apply baseline sampling
+  
+  
+  # get the data (combat)
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+  
+  # ---- Longitudinal: LongCombat & sampling weights ------
+
+  ## adding baseline variables
+  dat_x %<>% select(src_subject_id, temp_id, eventname, age_years, sex_01, site, eval(x), ends_with("_combat") )
+  dat_x_bl = subset(dat_x, eventname == "Baseline")
+  colnames(dat_x_bl) = c("src_subject_id", "temp_id", paste0(colnames(dat_x_bl)[-c(1:2)], "_bl"))
+  dat_x_bl %<>% arrange(temp_id, eval(x))
+  dat_x %<>% arrange(src_subject_id, eval(x))
+  dat_x = merge(dat_x, dat_x_bl, by = "temp_id", all = TRUE)
+
+  # calculate change from baseline
+  dat_x$D = dat_x[, x] - dat_x[, paste0(x, "_bl")]
+  
+  # removing records with missing D (i.e., those with missing baseline records)
+  dat_x = subset(dat_x, !is.na(dat_x$D))
+  # remove baseline vs baseline
+  dat_x = subset(dat_x, eventname != "Baseline")
+  
+  # ggplot(dat_x, aes(x = D)) + geom_histogram()
+  
+  
+  # winsorizing
+  ## baseline score
+  thres = quantile(dat_x[, paste0(x, "_bl")], probs = c(0.05, 0.95))
+  dat_x$bl_nihtb_winsor = dat_x[, paste0(x, "_bl")]
+  dat_x$bl_nihtb_winsor = ifelse(dat_x$bl_nihtb_winsor >= thres[2], thres[2], dat_x$bl_nihtb_winsor)
+  dat_x$bl_nihtb_winsor = ifelse(dat_x$bl_nihtb_winsor <= thres[1], thres[1], dat_x$bl_nihtb_winsor)
+  # ggplot(dat_x, aes(bl_nihtb_winsor)) + geom_histogram()
+  ## change in score
+  thres_D = quantile(dat_x$D, probs = c(0.05, 0.95))
+  dat_x$D_nihtb_winsor = dat_x$D
+  dat_x$D_nihtb_winsor = ifelse(dat_x$D_nihtb_winsor >= thres_D[2], thres_D[2], dat_x$D_nihtb_winsor)
+  dat_x$D_nihtb_winsor = ifelse(dat_x$D_nihtb_winsor <= thres_D[1], thres_D[1], dat_x$D_nihtb_winsor)
+  # ggplot(dat_x, aes(D_nihtb_winsor)) + geom_histogram()
+  
+  # derive the empirical bivariate density 
+  dat_x$freq = lapply(1:nrow(dat_x), FUN = function(i){
+    a = dat_x$bl_nihtb_winsor[i]
+    b = dat_x$D_nihtb_winsor[i]
+    d = sum(dat_x$bl_nihtb_winsor >= a - 0.5 & dat_x$bl_nihtb_winsor <= a + 0.5 & dat_x$D_nihtb_winsor >= b - 0.5 & dat_x$D_nihtb_winsor <= b + 0.5) / nrow(dat_x)
+    return(d)
+  }) %>% unlist
+  # plot(dat_x$nihtbx_picvocab_fc_bl, dat_x$freq)
+  # plot(dat_x$D, dat_x$freq)
+
+  # sampling weights --------
+  # weights for uniform resampling
+  dat_x$resamp_prob_flat = 1 / dat_x$freq
+  
+  # Target distribution for baseline cognitive measures
+  # U shape
+  a = dat_x$bl_nihtb_winsor - mean(range(dat_x$bl_nihtb_winsor))
+  dat_x$bl_resamp_prob_U =  (a^2 + 0.05 * max(a^2) ) / (1.05*max(a^2 ))
+  # plot(dat_x$bl_nihtb_winsor, dat_x$bl_resamp_prob_U)
+  # bell shape
+  dat_x$bl_resamp_prob_bell = - dat_x$bl_resamp_prob_U + 1.05
+  # plot(dat_x$bl_nihtb_winsor, dat_x$bl_resamp_prob_bell)
+  
+  # Target dist for change in cognitive measures
+  # U shape
+  a = dat_x$D_nihtb_winsor - mean(range(dat_x$D_nihtb_winsor))
+  dat_x$D_resamp_prob_U =  (a^2 + 0.05 * max(a^2) ) / (1.05*max(a^2 ))
+  # plot(dat_x$D_nihtb_winsor, dat_x$D_resamp_prob_U)
+  # bell shape
+  dat_x$D_resamp_prob_bell = - dat_x$D_resamp_prob_U + 1.05
+  # plot(dat_x$D_nihtb_winsor, dat_x$D_resamp_prob_bell)
+  
+  # bootstrapping----------
+  output = NULL
+  
+  for (N in Ns){
+    for (i in bl_schemes){
+      for (j in D_schemes){
+  
+        N = N
+        bl_s = i
+        D_s = j
+        cat("   N = ", N, "  - between-subj scheme = ", bl_s, "   - within-subj scheme = ", D_s, "\n")
+        
+        temp <- pbmclapply(1:nsim, function(simInd, data, N, bl_scheme, D_scheme){
+            rep = samp_func_long(data = data, samp_size = N, bl_scheme = bl_scheme, D_scheme = D_scheme)
+            return(rep)
+          },
+          data = dat_x,
+          N = N,
+          bl_scheme = bl_s,
+          D_scheme = D_s
+          , mc.cores = num.cores, mc.preschedule = FALSE
+          ) 
+        
+        temp = do.call(rbind, temp)
+        temp = temp[order(temp$Y), ]
+        
+        colnames(temp) = paste0("boot_", colnames(temp))
+        temp %<>% rename(Y = boot_Y, X = boot_X)
+        
+        sum = temp %>% group_by(Y) %>% summarise(gee_CS_RESI = mean(boot_gee_CS_resi),
+                                                 gee_CS_RESI_ll = quantile(boot_gee_CS_resi, probs = c(0.025)),
+                                                 gee_CS_RESI_ul = quantile(boot_gee_CS_resi, probs = c(0.975)),
+                                                   
+                                                 gee_L_RESI = mean(boot_gee_L_resi),
+                                                 gee_L_RESI_ll = quantile(boot_gee_L_resi, probs = c(0.025)),
+                                                 gee_L_RESI_ul = quantile(boot_gee_L_resi, probs = c(0.975)),
+                                                 
+                                                 # beta
+                                                 beta = mean(boot_beta),
+                                                 beta_ll = quantile(boot_beta, probs = c(0.025)),
+                                                 beta_ul = quantile(boot_beta, probs = c(0.975)),
+                                                 
+                                                 # SE of beta
+                                                 beta_se = mean(boot_beta_se),
+                                                 beta_se_ll = quantile(boot_beta_se, probs = c(0.025)),
+                                                 beta_se_ul = quantile(boot_beta_se, probs = c(0.975)),
+                                                   
+                                                 # mean of the `mean bl covariate` of a bootstrap sample across the bootstraps
+                                                 mean_bl_X = mean(boot_mean_bl_X),
+                                                 mean_bl_X_ll = quantile(boot_mean_bl_X, probs = c(0.025)),
+                                                 mean_bl_X_ul = quantile(boot_mean_bl_X, probs = c(0.975)),
+                                                 # SD of baseline covariate
+                                                 sd_bl_X = mean(boot_sd_bl_X),
+                                                 sd_bl_X_ll = quantile(boot_sd_bl_X, probs = c(0.025)),
+                                                 sd_bl_X_ul = quantile(boot_sd_bl_X, probs = c(0.975)),
+                                                 # mean of covariate change
+                                                 abs_D_X = mean(boot_mean_abs_D_X),
+                                                 D_X_ll = quantile(boot_mean_abs_D_X, probs = c(0.025)),
+                                                 D_X_ul = quantile(boot_mean_abs_D_X, probs = c(0.975)),
+                                                 # total variance of X
+                                                 total_var_X = mean(boot_sigma2_X),
+                                                 total_var_X_ll = quantile(boot_sigma2_X, probs = c(0.025)),
+                                                 total_var_X_ul = quantile(boot_sigma2_X, probs = c(0.975)),
+                                                 # mean between-subject var of X
+                                                 btwn_subj_var_X = mean(boot_sigma2_X_b),
+                                                 btwn_subj_var_X_ll = quantile(boot_sigma2_X_b, probs = c(0.025)),
+                                                 btwn_subj_var_X_ul = quantile(boot_sigma2_X_b, probs = c(0.975)),
+                                                 # mean within-subject SD of X
+                                                 within_subj_var_X = mean(boot_sigma2_X_w),
+                                                 within_subj_var_X_ll = quantile(boot_sigma2_X_w, probs = c(0.025)),
+                                                 within_subj_var_X_ul = quantile(boot_sigma2_X_w, probs = c(0.975)),
+                                                 # rho
+                                                 rho = mean(boot_rho, na.rm  = TRUE),
+                                                 rho_ll = quantile(boot_rho, probs = c(0.025), na.rm  = TRUE),
+                                                 rho_ul = quantile(boot_rho, probs = c(0.975), na.rm  = TRUE),
+                                                 # variance of error terms
+                                                 resid_var = mean(boot_resid_var, na.rm  = TRUE),
+                                                 resid_var_ll = quantile(boot_resid_var, probs = c(0.025), na.rm  = TRUE),
+                                                 resid_var_ul = quantile(boot_resid_var, probs = c(0.975), na.rm  = TRUE),
+                                                 # beta_b
+                                                 beta_b = mean(boot_beta_b, na.rm  = TRUE),
+                                                 beta_b_ll = quantile(boot_beta_b, probs = c(0.025), na.rm  = TRUE),
+                                                 beta_b_ul = quantile(boot_beta_b, probs = c(0.975), na.rm  = TRUE),
+                                                 # SE of beta_b
+                                                 beta_b_se = mean(boot_beta_b_se, na.rm  = TRUE),
+                                                 beta_b_se_ll = quantile(boot_beta_b_se, probs = c(0.025), na.rm  = TRUE),
+                                                 beta_b_se_ul = quantile(boot_beta_b_se, probs = c(0.975), na.rm  = TRUE),
+                                                 
+                                                 # ES of beta_b
+                                                 L_resi_b = mean(boot_L_resi_b, na.rm  = TRUE),
+                                                 L_resi_b_ll = quantile(boot_L_resi_b, probs = c(0.025), na.rm  = TRUE),
+                                                 L_resi_b_ul = quantile(boot_L_resi_b, probs = c(0.975), na.rm  = TRUE),
+                                                 # beta_w
+                                                 beta_w = mean(boot_beta_w, na.rm  = TRUE),
+                                                 beta_w_ll = quantile(boot_beta_w, probs = c(0.025), na.rm = TRUE),
+                                                 beta_w_ul = quantile(boot_beta_w, probs = c(0.975), na.rm = TRUE),
+                                                 # SE of beta_w
+                                                 beta_w_se = mean(boot_beta_w_se, na.rm  = TRUE),
+                                                 beta_w_se_ll = quantile(boot_beta_w_se, probs = c(0.025), na.rm  = TRUE),
+                                                 beta_w_se_ul = quantile(boot_beta_w_se, probs = c(0.975), na.rm  = TRUE),
+                                                 # ES of beta_w
+                                                 L_resi_w = mean(boot_L_resi_w, na.rm  = TRUE),
+                                                 L_resi_w_ll = quantile(boot_L_resi_w, probs = c(0.025), na.rm  = TRUE),
+                                                 L_resi_w_ul = quantile(boot_L_resi_w, probs = c(0.975), na.rm  = TRUE),
+                                                 # LMER
+                                                 lmer_L_resi = mean(boot_lmer_L_resi, na.rm  = TRUE),
+                                                 lmer_L_resi_ll = quantile(boot_lmer_L_resi, probs = c(0.025), na.rm  = TRUE),
+                                                 lmer_L_resi_ul = quantile(boot_lmer_L_resi, probs = c(0.975), na.rm  = TRUE),
+                                                 # m = 1
+                                                 resi_m1 = mean(boot_resi_m1),
+                                                 resi_m1_ll = quantile(boot_resi_m1, probs = c(0.025)),
+                                                 resi_m1_ul = quantile(boot_resi_m1, probs = c(0.975)),
+                                                 beta_m1 = mean(boot_beta_m1),
+                                                 beta_m1_ll = quantile(boot_beta_m1, probs = c(0.025)),
+                                                 beta_m1_ul = quantile(boot_beta_m1, probs = c(0.975)),
+                                                 beta_m1_se = mean(boot_beta_m1_se),
+                                                 beta_m1_se_ll = quantile(boot_beta_m1_se, probs = c(0.025)),
+                                                 beta_m1_se_ul = quantile(boot_beta_m1_se, probs = c(0.975))
+                                                 )
+        # power
+        power = temp %>% group_by(Y) %>% summarise(power = mean(boot_p_val <= 0.05),
+                                                   # m = 1
+                                                   power_m1 = mean(boot_p_val_m1 <= 0.05))
+
+        # replicability 
+        for (a in power$Y){
+          A = expand.grid(boot_1 = temp$boot_p_val[temp$Y == a], boot_2 = temp$boot_p_val[temp$Y == a])
+          power[which(power$Y == a), "replicability"] = mean(A$boot_1 <= 0.05 & A$boot_2 <= 0.05)
+          # m = 1
+          A = expand.grid(boot_1 = temp$boot_p_val_m1[temp$Y == a], boot_2 = temp$boot_p_val_m1[temp$Y == a])
+          power[which(power$Y == a), "replicability_m1"] = mean(A$boot_1 <= 0.05 & A$boot_2 <= 0.05)
+        }
+        
+        power %<>% arrange(Y)
+        sum %<>% arrange(Y)
+        
+        sum = merge(sum, power)
+      
+        
+        output = rbind(output,
+                       data.frame(N = N, nboot = nsim, bl_scheme = bl_s, D_scheme = D_s, X = x, sum))
+        
+
+    } # for "D_scheme"
+  } # for "bl_scheme"
+    
+} # for "N"
+  
+  saveRDS(output, paste0("Results/ABCD_samp_other_covariate_ROI_global/samp_", x, "_nsim", nsim, ".rds"))
+}
+
+Sys.time()
+
+```
+
+### Handedness
+```{r}
+# Longitudinal Measure: Handedness
+# data = dat_x
+# bl_scheme = 2
+# samp_size = 100
+
+# Sampling function ---------
+samp_func_long_handedness = function(data, bl_scheme, samp_size){
+  
+  data_bl = subset(data, eventname == "Baseline")
+  
+  probs = data_bl$resamp_decreased_prob ^(bl_scheme == 2) * data_bl$resamp_increased_prob ^(bl_scheme == 1)
+
+  # select based on baseline records
+  boot_id = sample(data_bl$temp_id, size = samp_size, replace = TRUE, prob = probs )
+
+  outcomes = c("GMV_10000_combat", "sGMV_10000_combat", "WMV_10000_combat", paste0(ROI_outcomes, "_combat"))
+  
+  boot_data = lapply(1:length(boot_id), function(i) {
+      id = boot_id[i]
+      subj_dat = data[data$temp_id == id, ]
+      # randomly select two if there are 3 records
+      if (nrow(subj_dat) > 2){
+        subj_dat = subj_dat[c(1, sample(2:3, 1)), ]
+      }
+      subj_dat$new_temp_id = i
+      subj_dat$new_visit = 1:2
+      return(subj_dat)
+    })
+  
+  boot_data = do.call(rbind, boot_data)
+  boot_data %<>% arrange(new_temp_id, new_visit)
+  # table(boot_data$handedness[boot_data$new_visit == 1])
+  
+  # # ANALYSIS
+  # ## mean of baseline covariate
+  # mean_bl_X = NA
+  # ## SD of baseline covariate
+  # sd_bl_X = NA
+  # ## mean of abs(D_covairte)
+  # mean_D_X = NA
+  # ## SD of D_age
+  # sd_D_X = NA
+    
+  # ESs of covarites
+  rv = NULL
+  # y = outcomes[1]
+  for (y in outcomes){
+    # m = 2
+    ## GEE
+    boot_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = boot_data, corstr = 'exchangeable', id = new_temp_id)")))
+    gee_resi = boot_gee %>% resi_pe(data = boot_data) %>% suppressWarnings()
+    gee_CS_resi = gee_resi$anova[3, 'CS-RESI'] # this is type 1 sequential anova
+    gee_L_resi = gee_resi$anova[3, 'L-RESI']
+    gee_p_val = gee_resi$anova[3, 'P(>|Chi|)']
+    beta = coefficients(boot_gee)[5]
+    beta_se = summary(boot_gee)$coefficients[5, "Std.err"]
+    #rho
+    rho = summary(boot_gee)$corr$Estimate
+    # var of error terms
+    resid_var = boot_gee$residuals %>% var
+    
+    ## LMER
+    # boot_lmer = eval(parse(text = paste0("lme4::lmer(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , "+ (1 | new_temp_id), data = boot_data)")))
+    # lmer_resi = boot_lmer %>% resi_pe(data = boot_data) %>% suppressWarnings()
+    # lmer_L_resi = lmer_resi$anova[x, "RESI"]
+    
+    # CS and L effects after controlling for age and sex
+    # skip
+
+    # m = 1 (only using baseline observations)
+    boot_data_bl = subset(boot_data, new_visit == 1)
+    boot_glm = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = boot_data_bl)")))
+    glm_resi = boot_glm %>% resi_pe(data = boot_data_bl) %>% suppressWarnings()
+    resi_m1 = glm_resi$anova[x, 'RESI'] 
+    beta_m1 = coefficients(boot_glm)[5]
+    beta_m1_se = summary(boot_glm)$coefficients[5, "Std. Error"]
+    p_val_m1 = glm_resi$anova[x, 'Pr(>Chisq)']
+    
+    rv = rbind(rv,
+               data.frame(Y = y,
+                          X = x,
+                          bl_scheme = bl_scheme,
+                          D_scheme = NA,
+                          # m = 2
+                          # GEE
+                          gee_CS_resi = gee_CS_resi,
+                          gee_L_resi = gee_L_resi,
+                          mean_bl_X = NA,
+                          sd_bl_X = NA,
+                          mean_abs_D_X = NA,
+                          sd_D_X = NA,
+                          sigma2_X = NA,
+                          sigma2_X_b = NA,
+                          sigma2_X_w = NA,
+                          p_val = gee_p_val,
+                          rho = rho,
+                          resid_var = resid_var,
+                          beta = beta,
+                          beta_se = beta_se, 
+                          # LMER
+                          lmer_L_resi = NA,
+                          # CS and L effect, separately
+                          beta_b = NA,
+                          beta_b_se = NA,
+                          L_resi_b = NA,
+                          beta_w = NA,
+                          beta_w_se = NA,
+                          L_resi_w = NA,
+                          # m = 1
+                          resi_m1 = resi_m1,
+                          beta_m1 = beta_m1,
+                          beta_m1_se = beta_m1_se,
+                          p_val_m1 = p_val_m1)
+               )
+  }
+  return(rv)
+}
+
+
+
+# ------- Sampling schemes ----------
+
+Ns = 500
+nsim = 1000
+
+Sys.time()
+set.seed(2023)
+
+var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- readr::read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+# between-subject resampling scheme.
+bl_schemes = c(1, 2) # 1 = even distribution (larger var); 2 = 10% right-handed (smaller varr)
+num.cores = 40
+
+output = NULL
+
+x = "handedness"
+
+for (x in "handedness"){ 
+  
+  cat("- Covariate:", x, "\n")
+  
+  design_x = var_info$design[which(var_info$var == x)]
+  cat("   - Design:", design_x, "\n")
+  
+
+  
+  # get the data (combat)
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+  
+  # ---- Longitudinal: LongCombat & sampling weights ------
+
+
+  # remove the subjects without baseline & the ones only having baselines
+  dat_x %<>% group_by(temp_id) %>% mutate(miss_bl = !("Baseline" %in% eventname),
+                                         num_obs = length(eventname))
+  dat_x = subset(dat_x, !miss_bl & num_obs > 1)
+  
+  # derive the empirical bivariate density 
+  count_tab = table(dat_x[, x]) %>% data.frame
+  count_tab %<>% rename(freq = Freq)
+  count_tab %<>% arrange(handedness)
+  dat_x %<>% arrange(handedness)
+  dat_x = merge(dat_x, count_tab, by = "handedness")
+  dat_x %<>% arrange(temp_id, age_years)
+
+  # sampling weights --------
+  # weights for even-proportion resampling
+  dat_x$resamp_increased_prob = 1 / dat_x$freq
+  dat_x$resamp_decreased_prob = 1/ dat_x$freq * 1 ^ (dat_x$handedness == "Right-handed") * 9 ^ (dat_x$handedness == "Not right-handed")
+  
+  # bootstrapping----------
+  output = NULL
+  
+  for (N in Ns){
+    for (i in bl_schemes){
+        N = N
+        bl_s = i
+
+        cat("   N = ", N, "  - between-subj scheme = ", bl_s, "   - within-subj scheme = NA", "\n")
+        
+        temp <- pbmclapply(1:nsim, function(simInd, data, N, bl_scheme){
+            rep = samp_func_long_handedness(data = data, samp_size = N, bl_scheme = bl_scheme)
+            return(rep)
+          },
+          data = dat_x, 
+          N = N,
+          bl_scheme = bl_s
+          , mc.cores = num.cores
+          ) 
+        
+        temp = do.call(rbind, temp)
+        
+        colnames(temp) = paste0("boot_", colnames(temp))
+        temp %<>% rename(Y = boot_Y, X = boot_X)
+
+        
+        sum = temp %>% group_by(Y) %>% summarise(gee_CS_RESI = mean(boot_gee_CS_resi),
+                                                 gee_CS_RESI_ll = quantile(boot_gee_CS_resi, probs = c(0.025)),
+                                                 gee_CS_RESI_ul = quantile(boot_gee_CS_resi, probs = c(0.975)),
+                                                   
+                                                 gee_L_RESI = mean(boot_gee_L_resi),
+                                                 gee_L_RESI_ll = quantile(boot_gee_L_resi, probs = c(0.025)),
+                                                 gee_L_RESI_ul = quantile(boot_gee_L_resi, probs = c(0.975)),
+                                                 
+                                                 # beta
+                                                 beta = mean(boot_beta),
+                                                 beta_ll = quantile(boot_beta, probs = c(0.025)),
+                                                 beta_ul = quantile(boot_beta, probs = c(0.975)),
+                                                 
+                                                 # SE of beta
+                                                 beta_se = mean(boot_beta_se),
+                                                 beta_se_ll = quantile(boot_beta_se, probs = c(0.025)),
+                                                 beta_se_ul = quantile(boot_beta_se, probs = c(0.975)),
+                                                   
+                                                 # mean of the `mean bl covariate` of a bootstrap sample across the bootstraps
+                                                 mean_bl_X = mean(boot_mean_bl_X, na.rm = TRUE),
+                                                 mean_bl_X_ll = quantile(boot_mean_bl_X, probs = c(0.025), na.rm = TRUE),
+                                                 mean_bl_X_ul = quantile(boot_mean_bl_X, probs = c(0.975), na.rm = TRUE),
+                                                 # SD of baseline covariate
+                                                 sd_bl_X = mean(boot_sd_bl_X, na.rm = TRUE),
+                                                 sd_bl_X_ll = quantile(boot_sd_bl_X, probs = c(0.025), na.rm = TRUE),
+                                                 sd_bl_X_ul = quantile(boot_sd_bl_X, probs = c(0.975), na.rm = TRUE),
+                                                 # mean of covariate change
+                                                 abs_D_X = mean(boot_mean_abs_D_X, na.rm = TRUE),
+                                                 D_X_ll = quantile(boot_mean_abs_D_X, probs = c(0.025), na.rm = TRUE),
+                                                 D_X_ul = quantile(boot_mean_abs_D_X, probs = c(0.975), na.rm = TRUE),
+                                                 # total variance of X
+                                                 total_var_X = mean(boot_sigma2_X, na.rm = TRUE),
+                                                 total_var_X_ll = quantile(boot_sigma2_X, probs = c(0.025), na.rm = TRUE),
+                                                 total_var_X_ul = quantile(boot_sigma2_X, probs = c(0.975), na.rm = TRUE),
+                                                 # mean between-subject var of X
+                                                 btwn_subj_var_X = mean(boot_sigma2_X_b, na.rm = TRUE),
+                                                 btwn_subj_var_X_ll = quantile(boot_sigma2_X_b, probs = c(0.025), na.rm = TRUE),
+                                                 btwn_subj_var_X_ul = quantile(boot_sigma2_X_b, probs = c(0.975), na.rm = TRUE),
+                                                 # mean within-subject SD of X
+                                                 within_subj_var_X = mean(boot_sigma2_X_w, na.rm = TRUE),
+                                                 within_subj_var_X_ll = quantile(boot_sigma2_X_w, probs = c(0.025), na.rm = TRUE),
+                                                 within_subj_var_X_ul = quantile(boot_sigma2_X_w, probs = c(0.975), na.rm = TRUE),
+                                                 # rho
+                                                 rho = mean(boot_rho),
+                                                 rho_ll = quantile(boot_rho, probs = c(0.025)),
+                                                 rho_ul = quantile(boot_rho, probs = c(0.975)),
+                                                 # variance of error terms
+                                                 resid_var = mean(boot_resid_var),
+                                                 resid_var_ll = quantile(boot_resid_var, probs = c(0.025)),
+                                                 resid_var_ul = quantile(boot_resid_var, probs = c(0.975)),
+                                                 # beta_b
+                                                 beta_b = mean(boot_beta_b, na.rm = TRUE),
+                                                 beta_b_ll = quantile(boot_beta_b, probs = c(0.025), na.rm = TRUE),
+                                                 beta_b_ul = quantile(boot_beta_b, probs = c(0.975), na.rm = TRUE),
+                                                 # ES of beta_b
+                                                 L_resi_b = mean(boot_L_resi_b, na.rm = TRUE),
+                                                 L_resi_b_ll = quantile(boot_L_resi_b, probs = c(0.025), na.rm = TRUE),
+                                                 L_resi_b_ul = quantile(boot_L_resi_b, probs = c(0.975), na.rm = TRUE),
+                                                 # ES of beta_b
+                                                 L_resi_b = mean(boot_L_resi_b, na.rm = TRUE),
+                                                 L_resi_b_ll = quantile(boot_L_resi_b, probs = c(0.025), na.rm = TRUE),
+                                                 L_resi_b_ul = quantile(boot_L_resi_b, probs = c(0.975), na.rm = TRUE),
+                                                 # beta_w
+                                                 beta_w = mean(boot_beta_w, na.rm = TRUE),
+                                                 beta_w_ll = quantile(boot_beta_w, probs = c(0.025), na.rm = TRUE),
+                                                 beta_w_ul = quantile(boot_beta_w, probs = c(0.975), na.rm = TRUE),
+                                                 # ES of beta_w
+                                                 L_resi_w = mean(boot_L_resi_w, na.rm = TRUE),
+                                                 L_resi_w_ll = quantile(boot_L_resi_w, probs = c(0.025), na.rm = TRUE),
+                                                 L_resi_w_ul = quantile(boot_L_resi_w, probs = c(0.975), na.rm = TRUE),
+                                                 # SE of beta_w
+                                                 beta_w_se = mean(boot_beta_w_se, na.rm = TRUE),
+                                                 beta_w_se_ll = quantile(boot_beta_w_se, probs = c(0.025), na.rm = TRUE),
+                                                 beta_w_se_ul = quantile(boot_beta_w_se, probs = c(0.975), na.rm = TRUE),
+                                                 # LMER
+                                                 lmer_L_resi = mean(boot_lmer_L_resi, na.rm  = TRUE),
+                                                 lmer_L_resi_ll = quantile(boot_lmer_L_resi, probs = c(0.025), na.rm  = TRUE),
+                                                 lmer_L_resi_ul = quantile(boot_lmer_L_resi, probs = c(0.975), na.rm  = TRUE),
+                                                 # m = 1
+                                                 resi_m1 = mean(boot_resi_m1),
+                                                 resi_m1_ll = quantile(boot_resi_m1, probs = c(0.025)),
+                                                 resi_m1_ul = quantile(boot_resi_m1, probs = c(0.975)),
+                                                 beta_m1 = mean(boot_beta_m1),
+                                                 beta_m1_ll = quantile(boot_beta_m1, probs = c(0.025)),
+                                                 beta_m1_ul = quantile(boot_beta_m1, probs = c(0.975)),
+                                                 beta_m1_se = mean(boot_beta_m1_se),
+                                                 beta_m1_se_ll = quantile(boot_beta_m1_se, probs = c(0.025)),
+                                                 beta_m1_se_ul = quantile(boot_beta_m1_se, probs = c(0.975))
+                                                 )
+        # power
+        power = temp %>% group_by(Y) %>% summarise(power = mean(boot_p_val <= 0.05),
+                                                   power_m1 = mean(boot_p_val_m1 <= 0.05))
+        
+        # replicability 
+        for (a in power$Y){
+          A = expand.grid(boot_1 = temp$boot_p_val[temp$Y == a], boot_2 = temp$boot_p_val[temp$Y == a])
+          power[which(power$Y == a), "replicability"] = mean(A$boot_1 <= 0.05 & A$boot_2 <= 0.05)
+          # m = 1
+          A = expand.grid(boot_1 = temp$boot_p_val_m1[temp$Y == a], boot_2 = temp$boot_p_val_m1[temp$Y == a])
+          power[which(power$Y == a), "replicability_m1"] = mean(A$boot_1 <= 0.05 & A$boot_2 <= 0.05)
+          
+        }
+        
+        power %<>% arrange(Y)
+        sum %<>% arrange(Y)
+        
+        sum = merge(sum, power)
+      
+        
+        output = rbind(output,
+                       data.frame(N = N, nboot = nsim, bl_scheme = bl_s, D_scheme = NA, X = x, sum))
+        
+
+  } # for "bl_scheme"
+    
+} # for "N"
+  
+  saveRDS(output, paste0("Results/ABCD_samp_other_covariate_ROI_global/samp_", x, "_nsim", nsim, ".rds"))
+}
+
+Sys.time()
+
+```
+
+
+### Cross-sectional measures
+
+```{r, eval = TRUE}
+# CS NIHTB measures
+
+## Sampling function --------------
+
+samp_func_CS = function(data, bl_scheme, samp_size){
+  
+  probs = data$resamp_prob_flat * (data$bl_resamp_prob_U)^(bl_scheme == 1) * (data$bl_resamp_prob_bell)^(bl_scheme == 2)
+
+  boot_id = sample(1:nrow(data), size = samp_size, replace = TRUE, prob = probs )
+
+  outcomes = c("GMV_10000_combat", "sGMV_10000_combat", "WMV_10000_combat", paste0(ROI_outcomes, "_combat"))
+  
+  boot_data = data[boot_id, ]
+  boot_data %<>% arrange(boot_id)
+
+  # ANALYSIS
+  ## mean of baseline covariate
+  mean_bl_X = boot_data[, x] %>% mean()
+  ## SD of baseline covariate
+  sd_bl_X = boot_data[, x] %>% sd()
+  ## mean of D_covairte
+  mean_D_X = NA
+  ## SD of D_age
+  sd_D_X = NA
+    
+  # ES of covarites
+  rv = NULL
+  for (y in outcomes){
+    boot_lm = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = boot_data)")))
+    boot_resi = boot_lm %>% resi_pe(data = boot_data)
+    boot_val_CS_resi = boot_resi$anova[3, 'RESI'] 
+    boot_val_L_resi = boot_resi$anova[3, 'RESI']
+    boot_p_val = boot_resi$anova[3, 'Pr(>Chisq)']
+    boot_beta = coefficients(boot_lm)[x]
+    
+    rv = rbind(rv,
+               data.frame(Y = y,
+                          X = x,
+                          bl_scheme = bl_scheme,
+                          D_scheme = NA,
+                          boot_val_CS_resi = boot_val_CS_resi,
+                          boot_val_L_resi = boot_val_L_resi,
+                          boot_beta = boot_beta,
+                          boot_mean_bl_X = mean_bl_X,
+                          boot_sd_bl_X = sd_bl_X,
+                          boot_mean_D_X = mean_D_X,
+                          boot_sd_D_X = sd_D_X,
+                          boot_p_val = boot_p_val))
+  }
+  return(rv)
+}
+
+
+
+
+
+# ------- Sampling schemes ----------
+
+
+var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+# x = var_info$var[12]
+
+Ns = 500
+nsim = 100
+
+Sys.time()
+set.seed(2023)
+
+num.cores = 5
+# between-subject resampling scheme.
+bl_schemes = c(1:2) # 0 - uniform ; 1 - U-shaped (larger variability); 2 - Bell-shaped (smaller variability)
+
+output = NULL
+x = var_info$var[var_info$design == "CS"][1]
+for (x in var_info$var[var_info$design == "CS"]){
+  
+  cat("- Covariate:", x, "\n")
+  
+  design_x = var_info$design[which(var_info$var == x)]
+  cat("   - Design:", design_x, "\n")
+  
+  # get the data 
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+
+  # ------- CS: sampling weights & analysis ----------
+  
+  # winsorizing
+  ## baseline score
+  thres = quantile(dat_x[, x], probs = c(0.05, 0.95))
+  dat_x$bl_nihtb_winsor = dat_x[, x]
+  dat_x$bl_nihtb_winsor = ifelse(dat_x$bl_nihtb_winsor >= thres[2], thres[2], dat_x$bl_nihtb_winsor)
+  dat_x$bl_nihtb_winsor = ifelse(dat_x$bl_nihtb_winsor <= thres[1], thres[1], dat_x$bl_nihtb_winsor)
+  
+  # derive the empirical density
+  Fn = ecdf(dat_x$bl_nihtb_winsor)
+  dat_x$freq = Fn(dat_x$bl_nihtb_winsor + 0.5) - Fn(dat_x$bl_nihtb_winsor - 0.5)
+  
+  
+  # Resampling probabilities -----
+  # s0: scheme 0 (flat)
+  dat_x$resamp_prob_flat = 1/dat_x$freq
+  # s1: scheme 1 (U shape)
+  a = dat_x$bl_nihtb_winsor  - mean(range(dat_x$bl_nihtb_winsor))
+  
+  dat_x$bl_resamp_prob_U = (a^2 + 0.05 * max(a^2)) / (1.05*max(a^2 ))
+  # plot(dat_x$bl_nihtb_winsor , dat_x$resamp_prob_U)
+  
+  # s2: scheme 2 (bell shape)
+  dat_x$bl_resamp_prob_bell =  - dat_x$bl_resamp_prob_U + 1.05
+    
+  # bootstrapping ---------
+  output = NULL
+  
+  for (N in Ns){
+    for (i in bl_schemes){
+        N = N
+        bl_s = i
+
+        cat("   N = ", N, "  - between-subj scheme = ", bl_s, "   - within-subj scheme = NA", "\n")
+        
+        temp <- pbmclapply(1:nsim, function(simInd, data, N, bl_scheme){
+            rep = samp_func_CS(data = data, samp_size = N, bl_scheme = bl_scheme)
+            return(rep)
+          },
+          data = dat_x, 
+          N = N,
+          bl_scheme = bl_s
+          , mc.cores = num.cores
+          ) 
+        
+        temp = do.call(rbind, temp)
+        temp = temp[order(temp$Y), ]
+        
+        sum = temp %>% group_by(Y) %>% summarise(gee_CS_RESI = mean(boot_val_CS_resi),
+                                                 gee_CS_RESI_ll = quantile(boot_val_CS_resi, probs = c(0.025)),
+                                                 gee_CS_RESI_ul = quantile(boot_val_CS_resi, probs = c(0.975)),
+                                                   
+                                                 gee_L_RESI = mean(boot_val_L_resi),
+                                                 gee_L_RESI_ll = quantile(boot_val_L_resi, probs = c(0.025)),
+                                                 gee_L_RESI_ul = quantile(boot_val_L_resi, probs = c(0.975)),
+                                                 
+                                                 # beta
+                                                 beta = mean(boot_beta),
+                                                 beta_ll = quantile(boot_beta, probs = c(0.025)),
+                                                 beta_ul = quantile(boot_beta, probs = c(0.975)),
+                                                   
+                                                 # mean of the `mean bl covariate` of a bootstrap sample across the bootstraps
+                                                 mean_bl_X = mean(boot_mean_bl_X),
+                                                 mean_bl_X_ll = quantile(boot_mean_bl_X, probs = c(0.025)),
+                                                 mean_bl_X_ul = quantile(boot_mean_bl_X, probs = c(0.975)),
+                                                 # SD of baseline covariate
+                                                 sd_bl_X = mean(boot_sd_bl_X),
+                                                 sd_bl_X_ll = quantile(boot_sd_bl_X, probs = c(0.025)),
+                                                 sd_bl_X_ul = quantile(boot_sd_bl_X, probs = c(0.975))
+                                                 )
+        # power
+        power = temp %>% group_by(Y) %>% summarise(power = mean(boot_p_val <= 0.05),
+                                                   power_m1 = NA)
+        
+        # replicability 
+        for (a in power$Y){
+          A = expand.grid(boot_1 = temp$boot_p_val[temp$Y == a], boot_2 = temp$boot_p_val[temp$Y == a])
+          power[which(power$Y == a), "replicability"] = mean(A$boot_1 <= 0.05 & A$boot_2 <= 0.05)
+        }
+        power$replicability_m1 = NA
+        
+        power %<>% arrange(Y)
+        sum %<>% arrange(Y)
+        
+        sum = merge(sum, power)
+      
+        
+        output = rbind(output,
+                       data.frame(N = N, nboot = nsim, bl_scheme = bl_s, D_scheme = NA, X = x, sum))
+        
+
+  } # for "bl_scheme"
+  
+  
+  } # for "N"
+  saveRDS(output, paste0("Results/ABCD_samp_other_covariate_ROI_global/samp_", x, "_nsim", nsim, ".rds"))
+
+}
+
+Sys.time()
+
+```
+
+
+

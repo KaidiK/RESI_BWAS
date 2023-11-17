@@ -1,0 +1,620 @@
+---
+title: "Part 5-2-1: Longitudinal resampling schemes with different number of measurements per-subject on the global brain measures in ADNI"
+author: "Kaidi Kang"
+date: "2023-08-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(readr)
+library(Hmisc) # for binomial wilson confidence interval
+library(cowplot) # for plot_grid & get_legend
+library(pbmcapply)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(RESI)
+library(geepack)
+library(splines)
+```
+
+
+## Sampling weights for follow-up and the baseline 
+```{r}
+analysis_data <- read_csv("../Initial_submission/data/analysis_data/whole_brain_measure/analysis_data_combat.csv") 
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+
+ADNI = subset(analysis_data, study == "ADNI")
+
+ADNI %<>% arrange(participant, age_years)
+
+ADNI %<>% group_by(participant) %>% mutate(age_bl = min(age_years),
+                                           D_age = age_years - age_bl,
+                                           visit = row_number(),
+                                           num_visit = n())
+```
+
+
+```{r}
+# hist of baseline age in ADNI
+ggplot(data = subset(ADNI, visit == 1), aes(x = age_bl)) + geom_histogram()
+# hist of D in ADNI
+ggplot(data = subset(ADNI, visit != 1), aes(x = D_age)) + geom_histogram()
+# their correlation
+ggplot(data = subset(ADNI, visit != 1), aes(x = age_bl, y = D_age)) + geom_point()
+```
+
+## m = 1
+only sampling the baseline records
+
+
+```{r}
+ADNI_bl = subset(ADNI, visit == 1)
+
+# winsorizing
+
+ADNI_bl$age_bl_winsor = ADNI_bl$age_bl
+ADNI_bl$age_bl_winsor = ifelse(ADNI_bl$age_bl >= 85, 85, ADNI_bl$age_bl)
+ADNI_bl$age_bl_winsor = ifelse(ADNI_bl$age_bl <= 65, 65, ADNI_bl$age_bl_winsor)
+
+# ggplot(data = subset(ADNI_fu, visit == 2), aes(x = age_bl_winsor)) + geom_histogram()
+
+
+
+ADNI_bl %<>% arrange(participant, visit)
+
+# derive the empirical bivariate density for each D and baseline combination
+# visit 1
+ADNI_bl$freq = lapply(1:nrow(ADNI_bl), FUN = function(x){
+  
+  a = ADNI_bl$age_bl_winsor[x]
+ 
+  
+  d = sum(ADNI_bl$age_bl_winsor >= a - 0.5 & ADNI_bl$age_bl_winsor <= a + 0.5 ) / nrow(ADNI_bl)
+  return(d)
+}) %>% unlist
+
+
+# plot(ADNI_fu$age_bl, ADNI_fu$freq)
+# plot(ADNI_fu$D_age, ADNI_fu$freq)
+
+# weight for uniform resampling
+ADNI_bl$resamp_prob_flat = 1 / ADNI_bl$freq
+
+
+# # Target distribution for baseline age
+# # U shape
+# ADNI_bl$bl_resamp_prob_U =  (ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2 / max((ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2)
+# # plot(ADNI_fu$age_bl_winsor, ADNI_fu$bl_resamp_prob_U)
+# # bell shape
+# ADNI_bl$bl_resamp_prob_bell =   ( 1 - (ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2 / max((ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2) )
+# # plot(ADNI_fu$age_bl_winsor, ADNI_fu$bl_resamp_prob_bell)
+
+
+# sampling function
+
+resamp_ADNI_1obs = function(data_bl, samp_size, bl_scheme = 0){
+
+  probs = data_bl$resamp_prob_flat # * (data_bl$bl_resamp_prob_U)^(bl_scheme == 1) * (data_bl$bl_resamp_prob_bell)^(bl_scheme == 2) 
+  
+  boot_id = sample(1:nrow(data_bl), size = samp_size, replace = TRUE, prob = probs )
+  boot_data = data_bl[boot_id, ]
+  boot_data$temp_id = 1:nrow(boot_data)
+  boot_data %<>% arrange(temp_id)
+
+  # dist of baseline age
+  # ggplot(data = subset(boot_data, visit == 1), aes(x = age_bl)) + geom_histogram()
+  # # dist of D(age)
+  # ggplot(data = subset(boot_data, visit != 1), aes(x = D_age)) + geom_histogram()
+  # 
+  # ANALYSIS
+  ## mean of baseline age
+  mean_bl_age = boot_data$age_years[boot_data$visit == 1] %>% mean()
+  ## SD of baseline age
+  sd_bl_age = boot_data$age_years[boot_data$visit == 1] %>% sd()
+  
+  mean_D_age = NA
+  sd_D_age = NA
+  
+  
+  # ES of age
+  boot_gee = lm(GMV_10000_combat ~ sex_01 + ns(age_years, 2), data = boot_data)
+
+  # RESI
+  boot_resi = boot_gee %>% RESI::resi_pe(data = boot_data)
+
+  boot_val_CS_resi = boot_resi$anova[2, 'RESI'] # this is type 1 sequential anova
+  boot_val_L_resi = boot_resi$anova[2, 'RESI']
+  
+  # p-val for age effects
+  boot_val_p = boot_resi$anova[2, 3]
+  
+  output = c(mean_bl_age, sd_bl_age, mean_D_age, sd_D_age, boot_val_CS_resi, boot_val_L_resi, boot_val_p)
+                 
+  names(output) = c("mean_bl_age", "sd_bl_age", "mean_D_age", "sd_D_age", "CS_RESI", "L_RESI", "p_val")
+   
+  return(output)
+}
+
+# --------
+# Simulations
+Sys.time()
+set.seed(2023)
+Ns = 30 # seq(20, 400, by = 5)
+nboot = 1000
+num_cores = 1
+# between-subject resampling scheme.
+bl_schemes = 0
+
+output = expand.grid(N = Ns, nboot = nboot, bl_scheme = bl_schemes)
+
+
+for (i in 1:nrow(output)){
+
+  samp_size = output$N[i]
+  bl_s = output$bl_scheme[i]
+  
+  cat(i, "- N:", samp_size, "  - bl scheme = ", bl_s, "\n")
+
+  temp <- pbmclapply(1:nboot, function(simInd, data_bl, samp_size, bl_scheme){
+            rep = resamp_ADNI_1obs(data_bl = data_bl, samp_size = samp_size, bl_scheme = bl_scheme)
+            return(rep)
+          },
+          data_bl = ADNI_bl,
+          samp_size = samp_size,
+          bl_scheme = bl_s
+          ,
+          mc.cores = num_cores
+          )
+  temp = do.call(rbind, temp) %>% as.data.frame
+
+  
+  # mean
+  output[which(output$N == samp_size & output$bl_scheme == bl_s ), 
+         c("bl_age", "sd_bl_age", "D_age", "sd_D_age", "CS_RESI_age", "L_RESI_age")] = colMeans(temp[, 1:6], na.rm = TRUE)
+
+  # lower bound
+  output[which(output$N == samp_size & output$bl_scheme == bl_s ), 
+         c("bl_age_ll", "sd_bl_age_ll", "D_age_ll", "sd_D_age_ll", "CS_RESI_age_ll", "L_RESI_age_ll")] =  apply(temp[, 1:6], 2, quantile, probs = c(0.025), na.rm = TRUE)
+  
+  # upper bound
+  output[which(output$N == samp_size & output$bl_scheme == bl_s ), 
+         c("bl_age_ul", "sd_bl_age_ul", "D_age_ul", "sd_D_age_ul", "CS_RESI_age_ul", "L_RESI_age_ul")] =  apply(temp[, 1:6], 2, quantile, probs = c(0.975), na.rm = TRUE)
+  
+  # Power
+  output[which(output$N == samp_size & output$bl_scheme == bl_s ), 'power'] = mean(temp$p_val <= 0.05)
+
+  # replicability
+  ## def: the probability of observing the same results (both significant) from two random bootstraps
+  # scheme 0 
+  grid = expand.grid(boot_1 = temp$p_val, boot_2 = temp$p_val)
+  output[which(output$N == samp_size & output$bl_scheme == bl_s ), 'replicability'] = mean(grid$boot_1 <= 0.05 & grid$boot_2 <= 0.05)
+}
+Sys.time()
+saveRDS(output, paste0("Results/resamp_whole_brain_measures/resamp_scheme_ADNI_m=1.rds"))
+
+
+
+```
+
+
+## m = 3
+```{r}
+ADNI_fu = subset(ADNI, visit != 1)
+
+# winsorizing
+
+ADNI_fu$age_bl_winsor = ADNI_fu$age_bl
+ADNI_fu$age_bl_winsor = ifelse(ADNI_fu$age_bl >= 85, 85, ADNI_fu$age_bl)
+ADNI_fu$age_bl_winsor = ifelse(ADNI_fu$age_bl <= 65, 65, ADNI_fu$age_bl_winsor)
+# ggplot(data = subset(ADNI_fu, visit == 2), aes(x = age_bl_winsor)) + geom_histogram()
+ADNI_fu$D_age_winsor = ADNI_fu$D_age
+ADNI_fu$D_age_winsor = ifelse(ADNI_fu$D_age >= 5, 5, ADNI_fu$D_age)
+
+ADNI_fu %<>% arrange(participant, visit)
+
+ADNI_fu_expand = merge(ADNI_fu, ADNI_fu[, c("participant", "visit", "D_age", "D_age_winsor", "GMV_10000_combat", "age_years")], by = "participant")
+
+ADNI_fu_expand %<>% rename(GMV_10000_combat_1 = GMV_10000_combat.x, # visit 1
+                           GMV_10000_combat_2 = GMV_10000_combat.y, # visit 2
+                           visit_1 = visit.x,
+                           visit_2 = visit.y,
+                           D_age_winsor_1 = D_age_winsor.x,
+                           D_age_winsor_2 = D_age_winsor.y,
+                           D_age_1 = D_age.x,
+                           D_age_2 = D_age.y,
+                           age_years_1 = age_years.x,
+                           age_years_2 = age_years.y
+                           )
+
+# derive the empirical bivariate density for each D and baseline combination
+# visit 1
+ADNI_fu_expand$freq = lapply(1:nrow(ADNI_fu_expand), FUN = function(x){
+  
+  a = ADNI_fu_expand$age_bl_winsor[x]
+  
+  b1 = ADNI_fu_expand$D_age_winsor_1[x]
+  b2 = ADNI_fu_expand$D_age_winsor_2[x]
+  
+  
+  d = sum(ADNI_fu_expand$age_bl_winsor >= a - 0.5 & ADNI_fu_expand$age_bl_winsor <= a + 0.5 & 
+            ADNI_fu_expand$D_age_winsor_1 >= b1 - 0.5 & ADNI_fu_expand$D_age_winsor_1 <= b1 + 0.5 &
+            ADNI_fu_expand$D_age_winsor_2 >= b2 - 0.5 & ADNI_fu_expand$D_age_winsor_2 <= b2 + 0.5) / nrow(ADNI_fu_expand)
+  return(d)
+}) %>% unlist
+
+
+# plot(ADNI_fu$age_bl, ADNI_fu$freq)
+# plot(ADNI_fu$D_age, ADNI_fu$freq)
+
+# weight for uniform resampling
+ADNI_fu_expand$resamp_prob_flat = 1 / ADNI_fu_expand$freq
+
+
+# Sampling function ----------------
+resamp_ADNI_3obs = function(data_fu, data_bl, samp_size, bl_scheme = 0, D_scheme = 0){
+
+  probs = data_fu$resamp_prob_flat
+   
+  
+  boot_id = sample(1:nrow(data_fu), size = samp_size, replace = TRUE, prob = probs )
+  boot_data = lapply(1:length(boot_id), function(x) {
+    id = boot_id[x]
+    followup_dat = data_fu[id, ]
+    # convert the followup data to long format
+    # visit 1 after bl
+    dat_v1 = followup_dat[, c("participant", "age_years_1", "GMV_10000_combat_1", "sex_01", "age_bl", "visit_1", "D_age_1")]
+    dat_v1 %<>% rename(age_years = age_years_1,
+                       GMV_10000_combat = GMV_10000_combat_1,
+                       visit = visit_1,
+                       D_age = D_age_1
+                       )
+    # visit 2 
+    dat_v2 = followup_dat[, c("participant", "age_years_2", "GMV_10000_combat_2", "sex_01", "age_bl", "visit_2", "D_age_2")]
+    dat_v2 %<>% rename(age_years = age_years_2,
+                       GMV_10000_combat = GMV_10000_combat_2,
+                       visit = visit_2,
+                       D_age = D_age_2
+                       )
+    
+    bl_dat = data_bl[data_bl$participant == followup_dat$participant, ]
+    subj_dat = rbind(dat_v1[, c("participant", "age_years", "GMV_10000_combat", "sex_01", "age_bl", "visit", "D_age")],
+                     dat_v2[, c("participant", "age_years", "GMV_10000_combat", "sex_01", "age_bl", "visit", "D_age")],
+                     bl_dat[, c("participant", "age_years", "GMV_10000_combat", "sex_01", "age_bl", "visit", "D_age")])
+    subj_dat$temp_id = x 
+    return(subj_dat)
+  })
+  boot_data = do.call(rbind, boot_data)
+  boot_data %<>% arrange(temp_id, age_years)
+
+  # dist of baseline age
+  # ggplot(data = subset(boot_data, visit == 1), aes(x = age_bl)) + geom_histogram()
+  # # dist of D(age)
+  # ggplot(data = subset(boot_data, visit != 1), aes(x = D_age)) + geom_histogram()
+  # 
+  # ANALYSIS
+  ## mean of baseline age
+  mean_bl_age = boot_data$age_years[boot_data$visit == 1] %>% mean()
+  ## SD of baseline age
+  sd_bl_age = boot_data$age_years[boot_data$visit == 1] %>% sd()
+  ## mean of D_age
+  mean_D_age = boot_data$D_age[boot_data$visit != 1] %>% mean()
+  ## SD of D_age
+  sd_D_age = boot_data$D_age[boot_data$visit != 1] %>% sd()
+
+  # ES of age
+  boot_gee = geeglm(GMV_10000_combat ~ sex_01 + ns(age_years, 2), data = boot_data, corstr = "exchangeable", id = temp_id)
+
+  # RESI
+  boot_resi = boot_gee %>% RESI::resi_pe(data = boot_data)
+
+  boot_val_CS_resi = boot_resi$anova[2, 'CS-RESI'] # this is type 1 sequential anova
+  boot_val_L_resi = boot_resi$anova[2, 'L-RESI']
+  
+  # p-val for age effects
+  boot_val_p = boot_resi$anova[2, 3]
+  
+  output = c(mean_bl_age, sd_bl_age, mean_D_age, sd_D_age, boot_val_CS_resi, boot_val_L_resi, boot_val_p)
+                 
+  names(output) = c("mean_bl_age", "sd_bl_age", "mean_D_age", "sd_D_age", "CS_RESI", "L_RESI", "p_val")
+   
+  return(output)
+}
+
+# test
+ADNI_bl = subset(ADNI, visit == 1)
+resamp_ADNI_3obs(data_fu = ADNI_fu_expand, data_bl = ADNI_bl, samp_size = 20, bl_scheme = 1, D_scheme = 1)
+
+# Simulations ---------------------
+Sys.time()
+set.seed(2023)
+Ns = 30 # seq(20, 400, by = 5)
+nboot = 1000
+num_cores = 1
+# between-subject resampling scheme.
+bl_schemes = 0
+D_schemes = 0
+ADNI_bl = subset(ADNI, visit == 1)
+
+
+output = expand.grid(N = Ns, nboot = nboot, bl_scheme = bl_schemes, D_scheme = D_schemes)
+
+
+for (i in 1:nrow(output)){
+
+  samp_size = output$N[i]
+  bl_s = output$bl_scheme[i]
+  D_s = output$D_scheme[i]
+  
+  cat(i, "- N:", samp_size, "  - bl scheme = ", bl_s, "  - D scheme = ", D_s, "\n")
+
+  temp <- pbmclapply(1:nboot, function(simInd, data_fu, data_bl, samp_size, bl_scheme, D_scheme){
+            rep = resamp_ADNI_3obs(data_fu = data_fu, data_bl = data_bl, samp_size = samp_size, bl_scheme = bl_scheme, D_scheme = D_scheme)
+            return(rep)
+          },
+          data_fu = ADNI_fu_expand,
+          data_bl = ADNI_bl,
+          samp_size = samp_size,
+          bl_scheme = bl_s,
+          D_scheme = D_s
+          ,
+          mc.cores = num_cores
+          )
+  temp = do.call(rbind, temp) %>% as.data.frame
+  
+  print(unique(temp$err_msg))
+  
+  
+  
+  # mean
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 
+         c("bl_age", "sd_bl_age", "D_age", "sd_D_age", "CS_RESI_age", "L_RESI_age")] = colMeans(temp[, 1:6])
+
+  # lower bound
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 
+         c("bl_age_ll", "sd_bl_age_ll", "D_age_ll", "sd_D_age_ll", "CS_RESI_age_ll", "L_RESI_age_ll")] =  apply(temp[, 1:6], 2, quantile, probs = c(0.025))
+  
+  # upper bound
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 
+         c("bl_age_ul", "sd_bl_age_ul", "D_age_ul", "sd_D_age_ul", "CS_RESI_age_ul", "L_RESI_age_ul")] =  apply(temp[, 1:6], 2, quantile, probs = c(0.975))
+  
+  # Power
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 'power'] = mean(temp$p_val <= 0.05)
+
+  # replicability
+  ## def: the probability of observing the same results (both significant) from two random bootstraps
+  # scheme 0 
+  grid = expand.grid(boot_1 = temp$p_val, boot_2 = temp$p_val)
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 'replicability'] = mean(grid$boot_1 <= 0.05 & grid$boot_2 <= 0.05)
+}
+Sys.time()
+saveRDS(output, paste0("Results/resamp_whole_brain_measures/resamp_scheme_ADNI_m=3.rds"))
+
+```
+
+
+## m = 4
+```{r}
+ADNI_fu = subset(ADNI, visit != 1)
+
+# winsorizing
+
+ADNI_fu$age_bl_winsor = ADNI_fu$age_bl
+ADNI_fu$age_bl_winsor = ifelse(ADNI_fu$age_bl >= 85, 85, ADNI_fu$age_bl)
+ADNI_fu$age_bl_winsor = ifelse(ADNI_fu$age_bl <= 65, 65, ADNI_fu$age_bl_winsor)
+# ggplot(data = subset(ADNI_fu, visit == 2), aes(x = age_bl_winsor)) + geom_histogram()
+ADNI_fu$D_age_winsor = ADNI_fu$D_age
+ADNI_fu$D_age_winsor = ifelse(ADNI_fu$D_age >= 5, 5, ADNI_fu$D_age)
+
+ADNI_fu %<>% arrange(participant, visit)
+
+ADNI_fu_expand = merge(ADNI_fu, ADNI_fu[, c("participant", "visit", "D_age", "D_age_winsor", "GMV_10000_combat", "age_years")], by = "participant")
+
+ADNI_fu_expand = merge(ADNI_fu_expand, ADNI_fu[, c("participant", "visit", "D_age", "D_age_winsor", "GMV_10000_combat", "age_years")], by = "participant")
+
+
+ADNI_fu_expand %<>% rename(GMV_10000_combat_1 = GMV_10000_combat.x, # visit 1
+                           GMV_10000_combat_2 = GMV_10000_combat.y, # visit 2
+                           GMV_10000_combat_3 = GMV_10000_combat, # visit 3
+                           visit_1 = visit.x,
+                           visit_2 = visit.y,
+                           visit_3 = visit,
+                           D_age_winsor_1 = D_age_winsor.x,
+                           D_age_winsor_2 = D_age_winsor.y,
+                           D_age_winsor_3 = D_age_winsor,
+                           D_age_1 = D_age.x,
+                           D_age_2 = D_age.y,
+                           D_age_3 = D_age,
+                           age_years_1 = age_years.x,
+                           age_years_2 = age_years.y,
+                           age_years_3 = age_years
+                           )
+
+# derive the empirical bivariate density for each D and baseline combination
+
+ADNI_fu_expand$freq = lapply(1:nrow(ADNI_fu_expand), FUN = function(x){
+  
+  a = ADNI_fu_expand$age_bl_winsor[x]
+  
+  b1 = ADNI_fu_expand$D_age_winsor_1[x]
+  b2 = ADNI_fu_expand$D_age_winsor_2[x]
+  b3 = ADNI_fu_expand$D_age_winsor_3[x]
+
+  d = sum(ADNI_fu_expand$age_bl_winsor >= a - 0.5 & ADNI_fu_expand$age_bl_winsor <= a + 0.5 & 
+            ADNI_fu_expand$D_age_winsor_1 >= b1 - 0.5 & ADNI_fu_expand$D_age_winsor_1 <= b1 + 0.5 &
+            ADNI_fu_expand$D_age_winsor_2 >= b2 - 0.5 & ADNI_fu_expand$D_age_winsor_2 <= b2 + 0.5 &
+            ADNI_fu_expand$D_age_winsor_3 >= b3 - 0.5 & ADNI_fu_expand$D_age_winsor_3 <= b3 + 0.5) / nrow(ADNI_fu_expand)
+  return(d)
+}) %>% unlist
+
+# plot(ADNI_fu$age_bl, ADNI_fu$freq)
+# plot(ADNI_fu$D_age, ADNI_fu$freq)
+
+# weight for uniform resampling
+ADNI_fu_expand$resamp_prob_flat = 1 / ADNI_fu_expand$freq
+
+
+# --- Sampling function for m = 4 -----------------
+# data_fu = ADNI_fu_expand
+# data_bl = subset(ADNI, visit == 1)
+# # bl_scheme: 0 - uniform; 1 - U-shape; 2 - Bell-shape
+# # D_scheme: 0 - uniform; 1 - Increasing; 3 - Decreasing
+# bl_scheme = 0
+# D_scheme = 0
+# samp_size = 1000
+
+resamp_ADNI_4obs = function(data_fu, data_bl, samp_size, bl_scheme = 0, D_scheme = 0){
+
+  probs = data_fu$resamp_prob_flat
+  
+  boot_id = sample(1:nrow(data_fu), size = samp_size, replace = TRUE, prob = probs )
+  boot_data = lapply(1:length(boot_id), function(x) {
+    id = boot_id[x]
+    followup_dat = data_fu[id, ]
+    # convert the followup data to long format
+    # visit 1 after bl
+    dat_v1 = followup_dat[, c("participant", "age_years_1", "GMV_10000_combat_1", "sex_01", "age_bl", "visit_1", "D_age_1")]
+    dat_v1 %<>% rename(age_years = age_years_1,
+                       GMV_10000_combat = GMV_10000_combat_1,
+                       visit = visit_1,
+                       D_age = D_age_1
+                       )
+    # visit 2 
+    dat_v2 = followup_dat[, c("participant", "age_years_2", "GMV_10000_combat_2", "sex_01", "age_bl", "visit_2", "D_age_2")]
+    dat_v2 %<>% rename(age_years = age_years_2,
+                       GMV_10000_combat = GMV_10000_combat_2,
+                       visit = visit_2,
+                       D_age = D_age_2
+                       )
+    # visit 3 
+    dat_v3 = followup_dat[, c("participant", "age_years_3", "GMV_10000_combat_3", "sex_01", "age_bl", "visit_3", "D_age_3")]
+    dat_v3 %<>% rename(age_years = age_years_3,
+                       GMV_10000_combat = GMV_10000_combat_3,
+                       visit = visit_3,
+                       D_age = D_age_3
+                       )
+    
+    
+    bl_dat = data_bl[data_bl$participant == followup_dat$participant, ]
+    subj_dat = rbind(dat_v1[, c("participant", "age_years", "GMV_10000_combat", "sex_01", "age_bl", "visit", "D_age")],
+                     dat_v2[, c("participant", "age_years", "GMV_10000_combat", "sex_01", "age_bl", "visit", "D_age")],
+                     dat_v3[, c("participant", "age_years", "GMV_10000_combat", "sex_01", "age_bl", "visit", "D_age")],
+                     bl_dat[, c("participant", "age_years", "GMV_10000_combat", "sex_01", "age_bl", "visit", "D_age")])
+    subj_dat$temp_id = x 
+    return(subj_dat)
+  })
+  boot_data = do.call(rbind, boot_data)
+  boot_data %<>% arrange(temp_id, age_years)
+
+  # # dist of baseline age
+  # ggplot(data = subset(boot_data, visit == 1), aes(x = age_bl)) + geom_histogram()
+  # # dist of D(age)
+  # ggplot(data = subset(boot_data, visit != 1), aes(x = D_age)) + geom_histogram()
+  
+  # ANALYSIS
+  ## mean of baseline age
+  mean_bl_age = boot_data$age_years[boot_data$visit == 1] %>% mean()
+  ## SD of baseline age
+  sd_bl_age = boot_data$age_years[boot_data$visit == 1] %>% sd()
+  ## mean of D_age
+  mean_D_age = boot_data$D_age[boot_data$visit != 1] %>% mean()
+  ## SD of D_age
+  sd_D_age = boot_data$D_age[boot_data$visit != 1] %>% sd()
+
+  # ES of age
+  boot_gee = geeglm(GMV_10000_combat ~ sex_01 + ns(age_years, 2), data = boot_data, corstr = "exchangeable", id = temp_id)
+
+  # RESI
+  boot_resi = boot_gee %>% RESI::resi_pe(data = boot_data)
+
+  boot_val_CS_resi = boot_resi$anova[2, 'CS-RESI'] # this is type 1 sequential anova
+  boot_val_L_resi = boot_resi$anova[2, 'L-RESI']
+  
+  # p-val for age effects
+  boot_val_p = boot_resi$anova[2, 3]
+  
+  output = c(mean_bl_age, sd_bl_age, mean_D_age, sd_D_age, boot_val_CS_resi, boot_val_L_resi, boot_val_p)
+                 
+  names(output) = c("mean_bl_age", "sd_bl_age", "mean_D_age", "sd_D_age", "CS_RESI", "L_RESI", "p_val")
+   
+  return(output)
+}
+
+
+# test
+ADNI_bl = subset(ADNI, visit == 1)
+resamp_ADNI_4obs(data_fu = ADNI_fu_expand, data_bl = ADNI_bl, samp_size = 20, bl_scheme = 1, D_scheme = 1)
+
+# -------- Simulations ---------------
+Sys.time()
+set.seed(2023)
+Ns = 40 # seq(20, 400, by = 5)
+nboot = 1000
+num_cores = 1
+# between-subject resampling scheme.
+bl_schemes = 0
+D_schemes = 0
+ADNI_bl = subset(ADNI, visit == 1)
+
+
+output = expand.grid(N = Ns, nboot = nboot, bl_scheme = bl_schemes, D_scheme = D_schemes)
+
+
+for (i in 1:nrow(output)){
+
+  samp_size = output$N[i]
+  bl_s = output$bl_scheme[i]
+  D_s = output$D_scheme[i]
+  
+  cat(i, "- N:", samp_size, "  - bl scheme = ", bl_s, "  - D scheme = ", D_s, "\n")
+
+  temp <- pbmclapply(1:nboot, function(simInd, data_fu, data_bl, samp_size, bl_scheme, D_scheme){
+            rep = resamp_ADNI_4obs(data_fu = data_fu, data_bl = data_bl, samp_size = samp_size, bl_scheme = bl_scheme, D_scheme = D_scheme)
+            return(rep)
+          },
+          data_fu = ADNI_fu_expand,
+          data_bl = ADNI_bl,
+          samp_size = samp_size,
+          bl_scheme = bl_s,
+          D_scheme = D_s
+          ,
+          mc.cores = num_cores
+          )
+  temp = do.call(rbind, temp) %>% as.data.frame
+  
+  print(unique(temp$err_msg))
+  
+  
+  
+  # mean
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 
+         c("bl_age", "sd_bl_age", "D_age", "sd_D_age", "CS_RESI_age", "L_RESI_age")] = colMeans(temp[, 1:6])
+
+  # lower bound
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 
+         c("bl_age_ll", "sd_bl_age_ll", "D_age_ll", "sd_D_age_ll", "CS_RESI_age_ll", "L_RESI_age_ll")] =  apply(temp[, 1:6], 2, quantile, probs = c(0.025))
+  
+  # upper bound
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 
+         c("bl_age_ul", "sd_bl_age_ul", "D_age_ul", "sd_D_age_ul", "CS_RESI_age_ul", "L_RESI_age_ul")] =  apply(temp[, 1:6], 2, quantile, probs = c(0.975))
+  
+  # Power
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 'power'] = mean(temp$p_val <= 0.05)
+
+  # replicability
+  ## def: the probability of observing the same results (both significant) from two random bootstraps
+  # scheme 0 
+  grid = expand.grid(boot_1 = temp$p_val, boot_2 = temp$p_val)
+  output[which(output$N == samp_size & output$bl_scheme == bl_s & output$D_scheme == D_s), 'replicability'] = mean(grid$boot_1 <= 0.05 & grid$boot_2 <= 0.05)
+}
+Sys.time()
+saveRDS(output, paste0("Results/resamp_whole_brain_measures/resamp_scheme_ADNI_m=4.rds"))
+
+```
+
+

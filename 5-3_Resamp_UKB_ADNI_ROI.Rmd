@@ -1,0 +1,554 @@
+---
+title: "Part 5-3: Resampling schemes for regional brain measures in UKB and ADNI"
+author: "Kaidi Kang"
+date: "7/29/2023"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+    use_bookdown: yes
+    code_folding: hide
+    toc_float: 
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(pbmcapply) # for parallel lapply with progress bar
+library(readr)
+library(magrittr)
+library(splines)
+library(lme4)
+library(geepack)
+library(RESI)
+library(dplyr)
+library(cowplot)
+library(ggpubr)
+```
+
+
+```{r}
+getwd()
+analysis_data <- read_csv("data/analysis_data/ROI/analysis_data_ROI_complete_case_combat.csv") 
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+study_info_clean <- read_csv("data/analysis_data/ROI/study_info_clean_ROI.csv")
+study_info_clean %<>% as.data.frame
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+```
+
+
+# UKB
+
+```{r, eval = TRUE}
+# data UKB
+UKB = subset(analysis_data, study == "UKB")
+
+# winsoring
+# ggplot(UKB, aes(x = age_years_winsor)) + geom_histogram()
+UKB$age_years_winsor = UKB$age_years
+UKB$age_years_winsor[UKB$age_years < 50] = 50
+UKB$age_years_winsor[UKB$age_years > 78] = 78
+
+Fn = ecdf(UKB$age_years_winsor)
+UKB$freq = Fn(UKB$age_years_winsor + 0.5) - Fn(UKB$age_years_winsor - 0.5)
+
+# Resampling probabilities
+# s0: scheme 0 (flat)
+UKB$resamp_prob_flat = 1/UKB$freq
+
+# s1: scheme 1 (U shape)
+x = UKB$age_years_winsor - mean(range(UKB$age_years_winsor))
+UKB$resamp_prob_U = (x^2 + 0.05 * max(x^2)) / (1.05*max(x^2 ))
+# plot(UKB$age_years_winsor, UKB$resamp_prob_U)
+
+# s2: scheme 2 (bell shape)
+UKB$resamp_prob_inv_U =  - UKB$resamp_prob_U + 1.05
+
+
+# samp_size = 100
+# data = UKB
+# scheme = 0
+outcomes = c(# ROI Vol
+             paste0("lh_Vol_", ROI_dict$var_names, "_combat"),
+             paste0("rh_Vol_", ROI_dict$var_names, "_combat"),
+             # CT
+             paste0("lh_CT_", ROI_dict$var_names, "_combat"),
+             paste0("rh_CT_", ROI_dict$var_names, "_combat"))
+
+
+
+# the function returns the estimated RESI (point estimate) and SD of age in the resampled data given a sampling scheme and sample size.  
+resamp_func_ukb = function(data, samp_size, scheme, outcomes){
+  
+  probs = data$resamp_prob_flat * data$resamp_prob_U^(scheme == 1) * data$resamp_prob_inv_U^(scheme == 2)
+
+  # scheme 0
+  if (scheme == 0) boot_id = sample(data$participant, size = samp_size, replace = TRUE, prob = probs)
+  # scheme 1
+  if (scheme == 1) boot_id = sample(data$participant, size = samp_size, replace = TRUE, prob = probs)
+  # scheme 2
+  if (scheme == 2) boot_id = sample(data$participant, size = samp_size, replace = TRUE, prob = probs)
+  
+  boot_data = data[unlist(lapply(boot_id, function(x) which(x == data[, "participant"]))), ]
+  
+  boot_val_sd = sd(boot_data$age_years)
+  
+  output = NULL
+  for (y in outcomes){
+    boot_lm = eval(parse(text = paste0("lm(formula = ", y, "~ ns(age_years, 2) + sex_01, data = boot_data)")))
+    boot_resi = boot_lm %>% RESI::resi_pe(data = boot_data)
+    boot_val_resi = boot_resi$anova[1, 4]
+    boot_p_val = boot_resi$anova[1, 3]
+    output = rbind(output, 
+                   c(y, boot_val_sd, boot_val_resi, boot_p_val))
+
+  }
+  output %<>% data.frame
+  names(output) = c("ROI", "sd_age", "resi", "p_value")
+
+  return(output)
+}
+
+resamp_func_ukb(data = UKB, samp_size = 1000, scheme = 2, outcomes = outcomes)
+
+```
+
+
+```{r, eval = TRUE}
+
+# bootstrapping settings
+set.seed(2023)
+nboot = 1000
+num.cores = 46
+Ns = seq(20, 400, by = 10)
+schemes = 0:2
+
+Sys.time()
+
+output_0 = output_1 = output_2 = NULL
+
+
+outcomes = c(# ROI Vol
+             paste0("lh_Vol_", ROI_dict$var_names, "_combat"),
+             paste0("rh_Vol_", ROI_dict$var_names, "_combat"),
+             # CT
+             paste0("lh_CT_", ROI_dict$var_names, "_combat"),
+             paste0("rh_CT_", ROI_dict$var_names, "_combat"))
+
+for (N in Ns){
+  samp_size = N
+  cat("N =", N, "\n")
+  
+  # scheme 0
+  cat("    - scheme: 0 \n")
+  temp = pbmclapply(1:nboot, function(simInd, data, samp_size, scheme, outcomes){
+            rep = resamp_func_ukb(data = data, samp_size = samp_size, scheme = scheme, outcomes = outcomes)
+            return(rep)
+          },
+          data = UKB,
+          samp_size = samp_size,
+          scheme = 0,
+          outcomes = outcomes
+          ,
+          mc.cores = num.cores
+          ) 
+  
+  temp = do.call(rbind, temp) %>% as.data.frame
+  temp$sd_age %<>% as.numeric
+  temp$resi %<>% as.numeric
+  temp$p_value %<>% as.numeric
+  
+  sum = temp %>% group_by(ROI) %>% summarise(mean_RESI_age = mean(resi),
+                                             RESI_age_ll = quantile(resi, probs = c(0.025)),
+                                             RESI_age_ul = quantile(resi, probs = c(0.975)),
+                                             mean_sd_age = mean(sd_age),
+                                             sd_age_ll = quantile(sd_age, probs = c(0.025)),
+                                             sd_age_ul = quantile(sd_age, probs = c(0.975))
+                                             )
+  # power
+  power = temp %>% group_by(ROI) %>% summarise(power = mean(p_value <= 0.05))
+  
+  # replicability 
+  for (x in power$ROI){
+    X = expand.grid(boot_1 = temp$p_value[temp$ROI == x], boot_2 = temp$p_value[temp$ROI == x])
+    
+    power[which(power$ROI == x), "replicability"] = mean(X$boot_1 <= 0.05 & X$boot_2 <= 0.05)
+    
+  }
+  
+  power %<>% arrange(ROI)
+  sum %<>% arrange(ROI)
+  
+  sum = merge(sum, power)
+  
+  output_0 = rbind(output_0,
+                  data.frame(N = samp_size, nboot = nboot, scheme = 0, sum))
+  
+  # scheme 1
+  cat("    - scheme: 1 \n")
+  temp = pbmclapply(1:nboot, function(simInd, data, samp_size, scheme, outcomes){
+            rep = resamp_func_ukb(data = data, samp_size = samp_size, scheme = scheme, outcomes = outcomes)
+            return(rep)
+          },
+          data = UKB,
+          samp_size = samp_size,
+          scheme = 1,
+          outcomes = outcomes
+          ,
+          mc.cores = num.cores
+          ) 
+  
+  temp = do.call(rbind, temp) %>% as.data.frame
+  temp$sd_age %<>% as.numeric
+  temp$resi %<>% as.numeric
+  temp$p_value %<>% as.numeric
+  
+  sum = temp %>% group_by(ROI) %>% summarise(mean_RESI_age = mean(resi),
+                                             RESI_age_ll = quantile(resi, probs = c(0.025)),
+                                             RESI_age_ul = quantile(resi, probs = c(0.975)),
+                                             mean_sd_age = mean(sd_age),
+                                             sd_age_ll = quantile(sd_age, probs = c(0.025)),
+                                             sd_age_ul = quantile(sd_age, probs = c(0.975))
+                                             )
+  # power
+  power = temp %>% group_by(ROI) %>% summarise(power = mean(p_value <= 0.05))
+  
+  # replicability 
+  for (x in power$ROI){
+    X = expand.grid(boot_1 = temp$p_value[temp$ROI == x], boot_2 = temp$p_value[temp$ROI == x])
+    
+    power[which(power$ROI == x), "replicability"] = mean(X$boot_1 <= 0.05 & X$boot_2 <= 0.05)
+    
+  }
+  
+  power %<>% arrange(ROI)
+  sum %<>% arrange(ROI)
+  
+  sum = merge(sum, power)
+  
+  output_1 = rbind(output_1,
+                  data.frame(N = samp_size, nboot = nboot, scheme = 1, sum))
+  
+  # scheme 2
+  cat("    - scheme: 2 \n")
+  temp = pbmclapply(1:nboot, function(simInd, data, samp_size, scheme, outcomes){
+            rep = resamp_func_ukb(data = data, samp_size = samp_size, scheme = scheme, outcomes = outcomes)
+            return(rep)
+          },
+          data = UKB,
+          samp_size = samp_size,
+          scheme = 2,
+          outcomes = outcomes
+          ,
+          mc.cores = num.cores
+          ) 
+  
+  temp = do.call(rbind, temp) %>% as.data.frame
+  temp$sd_age %<>% as.numeric
+  temp$resi %<>% as.numeric
+  temp$p_value %<>% as.numeric
+  
+  sum = temp %>% group_by(ROI) %>% summarise(mean_RESI_age = mean(resi),
+                                             RESI_age_ll = quantile(resi, probs = c(0.025)),
+                                             RESI_age_ul = quantile(resi, probs = c(0.975)),
+                                             mean_sd_age = mean(sd_age),
+                                             sd_age_ll = quantile(sd_age, probs = c(0.025)),
+                                             sd_age_ul = quantile(sd_age, probs = c(0.975))
+                                             )
+  # power
+  power = temp %>% group_by(ROI) %>% summarise(power = mean(p_value <= 0.05))
+  
+  # replicability 
+  for (x in power$ROI){
+    X = expand.grid(boot_1 = temp$p_value[temp$ROI == x], boot_2 = temp$p_value[temp$ROI == x])
+    
+    power[which(power$ROI == x), "replicability"] = mean(X$boot_1 <= 0.05 & X$boot_2 <= 0.05)
+    
+  }
+  
+  power %<>% arrange(ROI)
+  sum %<>% arrange(ROI)
+  
+  sum = merge(sum, power)
+  
+  output_2 = rbind(output_2,
+                  data.frame(N = samp_size, nboot = nboot, scheme = 2, sum))
+}
+
+output = rbind(output_0, output_1, output_2)
+
+# output
+
+saveRDS(output, paste0("Results/resamp_ROI_measures/resamp_ROI_UKB.rds"))
+
+Sys.time()
+```
+
+# ADNI 
+
+Make (1) the baseline covariate and (2) the change in covariate (here, age in years) since baseline follow specific distributions, respectively. 
+
+```{r}
+analysis_data <- read_csv("data/analysis_data/ROI/analysis_data_ROI_complete_case_combat.csv") 
+analysis_data %<>% as.data.frame # `tibble` will cause a lot of problems with current RESI package
+ROI_dict <- readr::read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+
+
+ADNI = subset(analysis_data, study == "ADNI")
+
+ADNI %<>% arrange(participant, age_years)
+
+ADNI %<>% group_by(participant) %>% mutate(age_bl = min(age_years),
+                                           D_age = age_years - age_bl,
+                                           visit = row_number(),
+                                           num_visit = n())
+
+# dataset of followup observations
+ADNI_fu = subset(ADNI, visit != 1)
+# data of baseline observations
+ADNI_bl = subset(ADNI, visit == 1)
+var_list = c("participant", "age_years",  "sex_01", "visit", 
+            # ROI Vol
+             paste0("lh_Vol_", ROI_dict$var_names, "_combat"),
+             paste0("rh_Vol_", ROI_dict$var_names, "_combat"),
+             # CT
+             paste0("lh_CT_", ROI_dict$var_names, "_combat"),
+             paste0("rh_CT_", ROI_dict$var_names, "_combat"))
+
+ADNI_fu = merge(ADNI_bl[var_list], ADNI[var_list], by = "participant", all = TRUE)
+
+ADNI_fu %<>% rename(age_years_0 = age_years.x,
+                        visit_0 = visit.x,
+                        sex_01 = sex_01.x,
+                        age_years_1 = age_years.y,
+                        visit_1 = visit.y)
+
+# calculate D(age)
+ADNI_fu$D_age = abs(ADNI_fu$age_years_1 - ADNI_fu$age_years_0)
+
+# winsorizing
+ADNI_fu$age_years_0_winsor = ADNI_fu$age_years_0
+ADNI_fu$age_years_0_winsor = ifelse(ADNI_fu$age_years_0 >= 85, 85, ADNI_fu$age_years_0_winsor)
+ADNI_fu$age_years_0_winsor = ifelse(ADNI_fu$age_years_0_winsor <= 65, 65, ADNI_fu$age_years_0_winsor)
+# ggplot(data = ADNI_fu, aes(x = age_years_0_winsor)) + geom_histogram()
+ADNI_fu$D_age_winsor = ADNI_fu$D_age
+ADNI_fu$D_age_winsor = ifelse(ADNI_fu$D_age >= 5, 5, ADNI_fu$D_age)
+
+
+# derive the empirical bivariate density 
+ADNI_fu$freq = lapply(1:nrow(ADNI_fu), FUN = function(x){
+  a = ADNI_fu$age_years_0_winsor[x]
+  b = ADNI_fu$D_age_winsor[x]
+  d = sum(ADNI_fu$age_years_0_winsor >= a - 0.5 & ADNI_fu$age_years_0_winsor <= a + 0.5 & ADNI_fu$D_age_winsor >= b - 0.5 & ADNI_fu$D_age_winsor <= b + 0.5) / nrow(ADNI_fu)
+  return(d)
+}) %>% unlist
+
+# plot(ADNI_fu$age_bl, ADNI_fu$freq)
+# plot(ADNI_fu$D_age, ADNI_fu$freq)
+
+# weight for uniform resampling
+ADNI_fu$resamp_prob_flat = 1 / ADNI_fu$freq
+
+
+# Target distribution for baseline age
+# U shape
+x = ADNI_fu$age_years_0_winsor - mean(range(ADNI_fu$age_years_0_winsor))
+ADNI_fu$bl_resamp_prob_U =  (x^2 + 0.05 * max(x^2) ) / (1.05*max(x^2 ))
+# plot(ADNI_fu$age_years_0, ADNI_fu$bl_resamp_prob_U)
+# bell shape
+ADNI_fu$bl_resamp_prob_bell = - ADNI_fu$bl_resamp_prob_U + 1.05
+# plot(ADNI_fu$age_years_0, ADNI_fu$bl_resamp_prob_bell)
+  
+# Target dist for change in age
+# increasing shape
+ADNI_fu$D_resamp_prob_inc = (exp(ADNI_fu$D_age_winsor) + 0.05 * exp(5) )/ max(exp(ADNI_fu$D_age_winsor) + 0.05 * exp(5) )
+
+# plot(ADNI_fu$D_age_winsor, ADNI_fu$D_resamp_prob_inc, ylim = c(0, 1.2))
+# decreasing shape
+
+ADNI_fu$D_resamp_prob_dec = (exp(-ADNI_fu$D_age_winsor) + 0.05 )/ max(exp(-ADNI_fu$D_age_winsor) + 0.05  )
+# plot(ADNI_fu$D_age_winsor, ADNI_fu$D_resamp_prob_dec, ylim = c(0, 1.2))
+ 
+
+# ADNI resampling function
+
+outcomes = c(# ROI Vol
+             paste0("lh_Vol_", ROI_dict$var_names, "_combat"),
+             paste0("rh_Vol_", ROI_dict$var_names, "_combat"),
+             # CT
+             paste0("lh_CT_", ROI_dict$var_names, "_combat"),
+             paste0("rh_CT_", ROI_dict$var_names, "_combat"))
+
+
+resamp_func_adni = function(data, samp_size, bl_scheme, D_scheme, outcomes){
+  
+  probs = data$resamp_prob_flat * (data$bl_resamp_prob_U)^(bl_scheme == 1) * (data$bl_resamp_prob_bell)^(bl_scheme == 2) * (data$D_resamp_prob_inc)^(D_scheme == 1) * (data$D_resamp_prob_dec)^(D_scheme == 2)
+  
+  boot_id = sample(1:nrow(data), size = samp_size, replace = TRUE, prob = probs )
+  boot_data = lapply(1:length(boot_id), function(x) {
+    
+    id = boot_id[x]
+    select_dat = data[id, ]
+    v1 = select_dat[, c("participant", "age_years_0", "sex_01", "D_age", "visit_0", paste0(outcomes, ".x"))]
+    v2 = select_dat[, c("participant", "age_years_1", "sex_01", "D_age", "visit_1", paste0(outcomes, ".y"))]
+    # v1 %<>% rename(age_years = age_years_0,
+    #                visit = visit_0)
+    # v2 %<>% rename(age_years = age_years_1,
+    #                visit = visit_1)
+    colnames(v1) = NA
+    colnames(v2) = NA
+    subj_dat = rbind(v1, v2)
+    
+    colnames(subj_dat) = c("participant", "age_years", "sex_01", "D_age", "visit", outcomes)
+    
+    subj_dat$temp_id = x 
+    subj_dat$new_visit = 1:2
+    return(subj_dat)
+  })
+  
+  boot_data = do.call(rbind, boot_data)
+  boot_data %<>% arrange(temp_id, age_years)
+
+  # table(boot_data$participant) %>% sort()
+  
+  # ANALYSIS
+  ## mean of baseline age
+  mean_bl_age = boot_data$age_years[boot_data$visit == 1] %>% mean()
+  ## SD of baseline age
+  sd_bl_age = boot_data$age_years[boot_data$visit == 1] %>% sd()
+  ## mean of D_age
+  mean_D_age = boot_data$D_age[boot_data$visit != 1] %>% mean()
+  ## SD of D_age
+  sd_D_age = boot_data$D_age[boot_data$visit != 1] %>% sd()
+
+  # ES of age on each regional measure
+  rv = NULL
+  for (y in outcomes){
+    boot_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2), data = boot_data, corstr = 'exchangeable', id = temp_id)")))
+    boot_resi = boot_gee %>% resi_pe(data = boot_data)
+    boot_val_CS_resi = boot_resi$anova[2, 'CS-RESI'] # this is type 1 sequential anova
+    boot_val_L_resi = boot_resi$anova[2, 'L-RESI']
+    boot_p_val = boot_resi$anova[2, 'P(>|Chi|)']
+    
+    rv = rbind(rv,
+               data.frame(ROI = y,
+                          boot_val_CS_resi = boot_val_CS_resi,
+                          boot_val_L_resi = boot_val_L_resi,
+                          boot_mean_bl_age = mean_bl_age,
+                          boot_sd_bl_age = sd_bl_age,
+                          boot_mean_D_age = mean_D_age,
+                          boot_sd_D_age = sd_D_age,
+                          boot_p_val = boot_p_val))
+  }
+
+
+  return(rv)
+}
+
+
+
+set.seed(2023)
+Sys.time()
+
+
+Ns = seq(20, 200, by = 10)
+# between-subject resampling scheme.
+bl_schemes = 0:2
+# with-in subject resampling scheme
+D_schemes = c(0:2)
+
+outcomes = c(# ROI Vol
+             paste0("lh_Vol_", ROI_dict$var_names, "_combat"),
+             paste0("rh_Vol_", ROI_dict$var_names, "_combat"),
+             # CT
+             paste0("lh_CT_", ROI_dict$var_names, "_combat"),
+             paste0("rh_CT_", ROI_dict$var_names, "_combat"))
+
+nsim = 1000
+num.cores = 46
+
+output = NULL
+
+for (N in Ns){
+  for (i in bl_schemes){
+    for (j in D_schemes){
+  
+  N = N
+  bl_s = i
+  D_s = j
+  cat("N: ", N, "\n")
+  cat("   - between-subj scheme = ", bl_s, "\n")
+  cat("   - within-subj scheme = ", D_s, "\n")
+  
+  temp <- pbmclapply(1:nsim, function(simInd, data, N, bl_scheme, D_scheme, outcomes){
+      rep = resamp_func_adni(data = data, samp_size = N, bl_scheme = bl_scheme, D_scheme = D_scheme, outcomes = outcomes)
+      return(rep)
+    },
+    data = ADNI_fu,
+    N = N,
+    bl_scheme = bl_s,
+    D_scheme = D_s,
+    outcomes = outcomes
+    , mc.cores = num.cores
+    ) 
+  
+  temp = do.call(rbind, temp)
+  temp = temp[order(temp$ROI), ]
+  
+  sum = temp %>% group_by(ROI) %>% summarise(CS_RESI_age = mean(boot_val_CS_resi),
+                                             CS_RESI_age_ll = quantile(boot_val_CS_resi, probs = c(0.025)),
+                                             CS_RESI_age_ul = quantile(boot_val_CS_resi, probs = c(0.975)),
+                                             
+                                             L_RESI_age = mean(boot_val_L_resi),
+                                             L_RESI_age_ll = quantile(boot_val_L_resi, probs = c(0.025)),
+                                             L_RESI_age_ul = quantile(boot_val_L_resi, probs = c(0.975)),
+                                             
+                                             # mean of the `mean bl age` of a bootstrap sample across the bootstraps
+                                             mean_mean_bl_age = mean(boot_mean_bl_age),
+                                             mean_mean_bl_age_ll = quantile(boot_mean_bl_age, probs = c(0.025)),
+                                             mean_mean_bl_age_ul = quantile(boot_mean_bl_age, probs = c(0.975)),
+                                             
+                                             mean_sd_bl_age = mean(boot_sd_bl_age),
+                                             mean_sd_bl_age_ll = quantile(boot_sd_bl_age, probs = c(0.025)),
+                                             mean_sd_bl_age_ul = quantile(boot_sd_bl_age, probs = c(0.975)),
+                                             
+                                             mean_mean_D_age = mean(boot_mean_D_age),
+                                             mean_D_age_ll = quantile(boot_mean_D_age, probs = c(0.025)),
+                                             mean_D_age_ul = quantile(boot_mean_D_age, probs = c(0.975)),
+                                             
+                                             mean_mean_D_age = mean(boot_mean_D_age),
+                                             mean_D_age_ll = quantile(boot_mean_D_age, probs = c(0.025)),
+                                             mean_D_age_ul = quantile(boot_mean_D_age, probs = c(0.975))
+                                           )
+  # power
+  power = temp %>% group_by(ROI) %>% summarise(power = mean(boot_p_val <= 0.05))
+  
+  # replicability 
+  for (x in power$ROI){
+    X = expand.grid(boot_1 = temp$boot_p_val[temp$ROI == x], boot_2 = temp$boot_p_val[temp$ROI == x])
+    
+    power[which(power$ROI == x), "replicability"] = mean(X$boot_1 <= 0.05 & X$boot_2 <= 0.05)
+    
+  }
+  
+  power %<>% arrange(ROI)
+  sum %<>% arrange(ROI)
+  
+  sum = merge(sum, power)
+
+  
+  output = rbind(output,
+                 data.frame(N = N, nboot = nsim, bl_scheme = bl_s, D_scheme = D_s, sum))
+  
+
+  }
+}
+}
+
+
+saveRDS(output, "Results/resamp_ROI_measures/resamp_ROI_ADNI.rds")
+Sys.time()
+```
+

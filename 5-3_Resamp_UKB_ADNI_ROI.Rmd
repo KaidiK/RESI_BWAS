@@ -46,7 +46,6 @@ ROI_dict %<>% as.data.frame
 UKB = subset(analysis_data, study == "UKB")
 
 # winsoring
-# ggplot(UKB, aes(x = age_years_winsor)) + geom_histogram()
 UKB$age_years_winsor = UKB$age_years
 UKB$age_years_winsor[UKB$age_years < 50] = 50
 UKB$age_years_winsor[UKB$age_years > 78] = 78
@@ -61,7 +60,6 @@ UKB$resamp_prob_flat = 1/UKB$freq
 # s1: scheme 1 (U shape)
 x = UKB$age_years_winsor - mean(range(UKB$age_years_winsor))
 UKB$resamp_prob_U = (x^2 + 0.05 * max(x^2)) / (1.05*max(x^2 ))
-# plot(UKB$age_years_winsor, UKB$resamp_prob_U)
 
 # s2: scheme 2 (bell shape)
 UKB$resamp_prob_inv_U =  - UKB$resamp_prob_U + 1.05
@@ -345,9 +343,6 @@ ADNI_fu$freq = lapply(1:nrow(ADNI_fu), FUN = function(x){
   return(d)
 }) %>% unlist
 
-# plot(ADNI_fu$age_bl, ADNI_fu$freq)
-# plot(ADNI_fu$D_age, ADNI_fu$freq)
-
 # weight for uniform resampling
 ADNI_fu$resamp_prob_flat = 1 / ADNI_fu$freq
 
@@ -356,21 +351,15 @@ ADNI_fu$resamp_prob_flat = 1 / ADNI_fu$freq
 # U shape
 x = ADNI_fu$age_years_0_winsor - mean(range(ADNI_fu$age_years_0_winsor))
 ADNI_fu$bl_resamp_prob_U =  (x^2 + 0.05 * max(x^2) ) / (1.05*max(x^2 ))
-# plot(ADNI_fu$age_years_0, ADNI_fu$bl_resamp_prob_U)
 # bell shape
 ADNI_fu$bl_resamp_prob_bell = - ADNI_fu$bl_resamp_prob_U + 1.05
-# plot(ADNI_fu$age_years_0, ADNI_fu$bl_resamp_prob_bell)
-  
+
 # Target dist for change in age
 # increasing shape
 ADNI_fu$D_resamp_prob_inc = (exp(ADNI_fu$D_age_winsor) + 0.05 * exp(5) )/ max(exp(ADNI_fu$D_age_winsor) + 0.05 * exp(5) )
 
-# plot(ADNI_fu$D_age_winsor, ADNI_fu$D_resamp_prob_inc, ylim = c(0, 1.2))
 # decreasing shape
-
 ADNI_fu$D_resamp_prob_dec = (exp(-ADNI_fu$D_age_winsor) + 0.05 )/ max(exp(-ADNI_fu$D_age_winsor) + 0.05  )
-# plot(ADNI_fu$D_age_winsor, ADNI_fu$D_resamp_prob_dec, ylim = c(0, 1.2))
- 
 
 # ADNI resampling function
 

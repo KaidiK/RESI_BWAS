@@ -37,14 +37,14 @@ boot.samp <- function(data, id.var = NULL) {
 
 
 # Summary
-In this section, we evaluate the ESs & power in ABCD studies using the cross-sectional design (using baseline measures only) vs. using the longitudinal design (using the fulll dataset) without bootstrapping.
+In this section, we evaluate the ESs, power and replicability in ABCD studies using the cross-sectional design (using baseline measures only, and using the second measures only) vs. using the longitudinal design (using the fulll dataset) without bootstrapping.
 
 # Analysis
 
 ## Total GMV
 ```{r}
 set.seed(2023)
-nboot = 1000
+nboot = 1000 # this is the number of bootstrapping replicates for RESI confidence interval estimation
 
 var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
 
@@ -89,7 +89,7 @@ temp = pbmclapply(var_list, FUN = function(x){
   dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
   y = c("GMV_10000_combat")
 
-  # CS analysis
+  # CS analysis (using 1st/baseline measurements)
   data_bl = subset(dat_x, eventname == "Baseline")
   fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_bl)")))
   
@@ -101,7 +101,20 @@ temp = pbmclapply(var_list, FUN = function(x){
   beta_bl = NA
   beta_se_bl = NA
   
-  ## Longitudinal analysis (point estimates)
+  # CS analysis (using 2nd measurements)
+  data_2nd = subset(dat_x, eventname == "2-year follow-up")
+  fit_2nd = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_2nd)")))
+  
+  resi_obj_2nd = fit_2nd %>% resi(data = data_2nd, nboot = nboot) %>% suppressWarnings()
+  resi_2nd = resi_obj_2nd$anova[x, "RESI"]
+  resi_2nd_ll = resi_obj_2nd$anova[x, "2.5%"]
+  resi_2nd_ul = resi_obj_2nd$anova[x, "97.5%"]
+  p_val_2nd = resi_obj_2nd$anova[x, "Pr(>Chisq)"]
+  beta_2nd = NA
+  beta_se_2nd = NA
+  
+  
+  ## Longitudinal analysis
   ## 1. GEE
   fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = dat_x, corstr = 'exchangeable', id = temp_id)")))
   gee_resi_obj_full = fit_full_gee %>% resi(data = dat_x, overall = FALSE, coefficients = FALSE, nboot = nboot) %>% suppressWarnings()
@@ -122,9 +135,12 @@ temp = pbmclapply(var_list, FUN = function(x){
   
   output = rbind(output,
                  data.frame(Y = y, X = x,
-                            # baseline analysis
+                            # 1st measurement analysis
                             beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, resi_bl_ll = resi_bl_ll, resi_bl_ul = resi_bl_ul, 
                             p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+                            # 2nd measurement analysis
+                            beta_2nd = beta_2nd, beta_se_2nd = beta_se_2nd, resi_2nd = resi_2nd, resi_2nd_ll = resi_2nd_ll, resi_2nd_ul = resi_2nd_ul, 
+                            p_val_2nd = p_val_2nd, N_2nd = nobs(fit_2nd),
                             # GEE w/ full data
                             gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, gee_resi_full_ll = gee_resi_full_ll, gee_resi_full_ul = gee_resi_full_ul, 
                             gee_p_val_full = gee_p_val_full, 
@@ -145,6 +161,108 @@ saveRDS(temp, paste0("Results/ABCD_CS_L_analysis/bl_and_full_data_analysis_GMV.r
 Sys.time()
 # it took 1hr and 20 mins
 ```
+### Separating between- and within-subject effects
+```{r}
+# Compare the between-subject effect with cross-sectional study using baselines
+set.seed(2023)
+nboot = 1000 # this is the number of bootstrapping replicates for RESI confidence interval estimation
+
+var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+outcomes = c("GMV_10000_combat")
+
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            # "bw",
+            # BMI
+            "BMI"
+            # # Handedness
+            # "handedness"
+            )
+
+# x = "bw"
+# x = var_list[1]
+output = NULL
+
+Sys.time()
+
+temp = pbmclapply(var_list, FUN = function(x){
+  # cat("X = ", x)
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+  y = c("GMV_10000_combat")
+
+  # CS analysis (using 1st/baseline measurements)
+  data_bl = subset(dat_x, eventname == "Baseline")
+  fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_bl)")))
+  
+  resi_obj_bl = fit_bl %>% resi(data = data_bl, nboot = nboot) %>% suppressWarnings()
+  resi_bl = resi_obj_bl$anova[x, "RESI"]
+  resi_bl_ll = resi_obj_bl$anova[x, "2.5%"]
+  resi_bl_ul = resi_obj_bl$anova[x, "97.5%"]
+  p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
+  beta_bl = NA
+  beta_se_bl = NA
+  
+  ## Longitudinal analysis
+  ## 1. GEE
+  dat_x %<>%  arrange(temp_id, age_years) %>% group_by(temp_id) %>% mutate(miss_bl = !("Baseline" %in% eventname)) %>% 
+    filter(!miss_bl) %>% 
+    mutate(X = !!as.name(x), 
+           X_bl = X[eventname == "Baseline"],
+           X_change = X - X_bl) %>% ungroup()
+  
+  fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + X_change + X_bl, data = dat_x, corstr = 'exchangeable', id = temp_id)")))
+  # Type 1 anova (sequential): put the variable of interest as the last term
+  gee_resi_obj_full = fit_full_gee %>% resi(data = dat_x, overall = FALSE, coefficients = FALSE, nboot = nboot) %>% suppressWarnings()
+  gee_resi_full = gee_resi_obj_full$anova["X_bl", "L-RESI"]
+  gee_resi_full_ll = gee_resi_obj_full$anova["X_bl", "L 2.5%"]
+  gee_resi_full_ul = gee_resi_obj_full$anova["X_bl", "L 97.5%"]
+  gee_p_val_full = gee_resi_obj_full$anova["X_bl", "P(>|Chi|)"]
+  gee_beta_full = NA #summary(fit_full_gee)$coefficients[x, "Estimate"]
+  gee_beta_se_full = NA #summary(fit_full_gee)$coefficients[x, "Std.err"]
+  
+  output = rbind(output,
+                 data.frame(Y = y, X = x,
+                            # 1st measurement analysis
+                            beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, resi_bl_ll = resi_bl_ll, resi_bl_ul = resi_bl_ul, 
+                            p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+
+                            # GEE w/ full data
+                            gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, gee_resi_full_ll = gee_resi_full_ll, gee_resi_full_ul = gee_resi_full_ul, 
+                            gee_p_val_full = gee_p_val_full)
+  )
+  
+  
+}
+, mc.cores = 11, mc.preschedule = FALSE
+)
+
+temp = do.call(rbind, temp)
+saveRDS(temp, paste0("Results/ABCD_CS_L_analysis/between_subject_effects_CS_L_data_analysis_GMV.rds"))
+  
+Sys.time()
+
+```
+
 
 ## Regional structural brain measures
 
@@ -180,10 +298,10 @@ var_list = c(
             # BMI
             "BMI",
             # # Handedness
-            "handedness_impute"
+            "handedness"
             )
 
-# var_list = "handedness_impute"
+var_list = "handedness"
 # x = var_list[1]
 
 Sys.time()
@@ -196,25 +314,31 @@ for (x in var_list){
 
   # y = outcomes[1]
   temp = pbmclapply(outcomes, FUN = function(y){
-    # CS analysis
+    # CS analysis (1st measurement)
     data_bl = subset(dat_x, eventname == "Baseline")
     fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_bl)")))
     
     resi_obj_bl = fit_bl %>% resi_pe(data = data_bl)
     resi_bl = resi_obj_bl$anova[x, "RESI"]
-    resi_bl_ll = resi_obj_bl$anova[x, "2.5%"]
-    resi_bl_ul = resi_obj_bl$anova[x, "97.5%"]
     p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
     beta_bl = NA #summary(fit_bl)$coefficients[x, "Estimate"]
     beta_se_bl = NA #summary(fit_bl)$coefficients[x, "Std. Error"]
     
+    # CS analysis (using 2nd measurements)
+    data_2nd = subset(dat_x, eventname == "2-year follow-up")
+    fit_2nd = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_2nd)")))
+    
+    resi_obj_2nd = fit_2nd %>% resi_pe(data = data_2nd) 
+    resi_2nd = resi_obj_2nd$anova[x, "RESI"]
+    p_val_2nd = resi_obj_2nd$anova[x, "Pr(>Chisq)"]
+    beta_2nd = NA
+    beta_se_2nd = NA
+  
     ## Longitudinal analysis (point estimates)
     ## 1. GEE
     fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = dat_x, corstr = 'exchangeable', id = temp_id)")))
     gee_resi_obj_full = fit_full_gee %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE)
     gee_resi_full = gee_resi_obj_full$anova[x, "L-RESI"]
-    gee_resi_full_ll = NA # gee_resi_obj_full$anova[x, "L 2.5%"]
-    gee_resi_full_ul = NA # gee_resi_obj_full$anova[x, "L 97.5%"]
     gee_p_val_full = gee_resi_obj_full$anova[x, "P(>|Chi|)"]
     gee_beta_full = NA # summary(fit_full_gee)$coefficients[x, "Estimate"]
     gee_beta_se_full = NA # summary(fit_full_gee)$coefficients[x, "Std.err"]
@@ -230,10 +354,13 @@ for (x in var_list){
     output = rbind(output, 
                    data.frame(Y = y, X = x,
                               # baseline analysis
-                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, resi_bl_ll = resi_bl_ll, resi_bl_ul = resi_bl_ul, 
+                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, 
                               p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+                              # 2nd measurement analysis
+                              beta_2nd = beta_2nd, beta_se_2nd = beta_se_2nd, resi_2nd = resi_2nd,
+                              p_val_2nd = p_val_2nd, N_2nd = nobs(fit_2nd),
                               # GEE w/ full data
-                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, gee_resi_full_ll = gee_resi_full_ll, gee_resi_full_ul = gee_resi_full_ul, 
+                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full,
                               gee_p_val_full = gee_p_val_full, 
                               # LMM w/ full data,
                               lmm_beta_full = lmm_beta_full, lmm_beta_se_full = lmm_beta_se_full, lmm_resi_full = lmm_resi_full, 
@@ -254,6 +381,108 @@ saveRDS(temp, paste0("Results/ABCD_CS_L_analysis/bl_and_full_data_analysis_ROI_"
 Sys.time()
 
 ```
+
+### Separating between- and within-subject effects
+
+```{r}
+set.seed(2023)
+num_cores = 40
+var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+outcomes = c(paste0(ROI_outcomes, "_combat"))
+
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            # "bw",
+            # BMI
+            "BMI"
+            # # Handedness
+            # "handedness"
+            )
+
+# var_list = "handedness"
+# x = var_list[1]
+
+Sys.time()
+
+for (x in var_list){
+  output = NULL
+
+  cat("X = ", x, "\n")
+  dat_x = readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+
+  # y = outcomes[1]
+  temp = pbmclapply(outcomes, FUN = function(y){
+    # CS analysis (1st measurement)
+    data_bl = subset(dat_x, eventname == "Baseline")
+    fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_bl)")))
+    
+    resi_obj_bl = fit_bl %>% resi_pe(data = data_bl)
+    resi_bl = resi_obj_bl$anova[x, "RESI"]
+    p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
+    beta_bl = NA #summary(fit_bl)$coefficients[x, "Estimate"]
+    beta_se_bl = NA #summary(fit_bl)$coefficients[x, "Std. Error"]
+    
+  
+    ## Longitudinal analysis (point estimates)
+    ## 1. GEE
+    dat_x %<>%  arrange(temp_id, age_years) %>% group_by(temp_id) %>% mutate(miss_bl = !("Baseline" %in% eventname)) %>% 
+        filter(!miss_bl) %>% 
+        mutate(X = !!as.name(x), 
+               X_bl = X[eventname == "Baseline"],
+               X_change = X - X_bl) %>% ungroup()
+  
+    fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + X_change + X_bl, data = dat_x, corstr = 'exchangeable', id = temp_id)")))
+    gee_resi_obj_full = fit_full_gee %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE)
+    gee_resi_full = gee_resi_obj_full$anova["X_bl", "L-RESI"]
+    gee_p_val_full = gee_resi_obj_full$anova["X_bl", "P(>|Chi|)"]
+    gee_beta_full = NA # summary(fit_full_gee)$coefficients[x, "Estimate"]
+    gee_beta_se_full = NA # summary(fit_full_gee)$coefficients[x, "Std.err"]
+    
+    output = rbind(output, 
+                   data.frame(Y = y, X = x,
+                              # baseline analysis
+                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, 
+                              p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+ 
+                              # GEE w/ full data
+                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full,
+                              gee_p_val_full = gee_p_val_full)
+    )
+
+  # return(output)
+  }
+  , mc.cores = num_cores, mc.preschedule = FALSE)
+  
+temp = do.call(rbind, temp)
+saveRDS(temp, paste0("Results/ABCD_CS_L_analysis/between_subject_effects_CS_L_data_analysis_ROI_", x, ".rds"))
+  
+}
+
+Sys.time()
+
+```
+
+
 
 ## Functional connectivity
 ```{r}
@@ -301,23 +530,26 @@ temp = pbmclapply(var_list, FUN = function(x){
                     # CS analysis
                     data_bl = subset(dat_x, eventname == "baseline_year_1_arm_1")
                     fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ns(mean_FD, df = 3) + ", x , ", weights = frame_count, data = data_bl)")))
-                    
                     resi_obj_bl = fit_bl %>% resi_pe(data = data_bl, overall = FALSE) %>% suppressWarnings()
                     resi_bl = resi_obj_bl$anova[x, "RESI"]
-                    resi_bl_ll = NA
-                    resi_bl_ul = NA
-                    
                     p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
                     beta_bl = NA
                     beta_se_bl = NA
+                    
+                    # CS analysis (using 2nd measurements)
+                    data_2nd = subset(dat_x, eventname == "2_year_follow_up_y_arm_1")
+                    fit_2nd = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ", x , ", data = data_2nd)")))
+                    resi_obj_2nd = fit_2nd %>% resi_pe(data = data_2nd, overall = FALSE, coefficients = FALSE)  %>% suppressWarnings() 
+                    resi_2nd = resi_obj_2nd$anova[x, "RESI"]
+                    p_val_2nd = resi_obj_2nd$anova[x, "Pr(>Chisq)"]
+                    beta_2nd = NA
+                    beta_se_2nd = NA
                 
                     ## Longitudinal analysis
                     ## 1. GEE
                     fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ns(mean_FD, df = 3) + ", x , ", data = dat_x, corstr = 'exchangeable', weights = frame_count, id = temp_id)")))
                     gee_resi_obj_full = fit_full_gee %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE)  %>% suppressWarnings()
                     gee_resi_full = gee_resi_obj_full$anova[x, "L-RESI"] 
-                    gee_resi_full_ll = NA
-                    gee_resi_full_ul = NA
                     gee_p_val_full = gee_resi_obj_full$anova[x, "P(>|Chi|)"]
                     gee_beta_full = NA
                     gee_beta_se_full = NA
@@ -333,10 +565,13 @@ temp = pbmclapply(var_list, FUN = function(x){
                     output = rbind(output,
                                    data.frame(Y = y, X = x,
                                               # baseline analysis
-                                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl, resi_bl_ll = resi_bl_ll, resi_bl_ul = resi_bl_ul, 
+                                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl,  
                                               p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+                                              # 2nd measurement analysis
+                                              beta_2nd = beta_2nd, beta_se_2nd = beta_se_2nd, resi_2nd = resi_2nd,
+                                              p_val_2nd = p_val_2nd, N_2nd = nobs(fit_2nd),
                                               # GEE w/ full data
-                                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, gee_resi_full_ll = gee_resi_full_ll, gee_resi_full_ul = gee_resi_full_ul, 
+                                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, 
                                               gee_p_val_full = gee_p_val_full, 
                                               # LMM w/ full data,
                                               lmm_beta_full = lmm_beta_full, lmm_beta_se_full = lmm_beta_se_full, lmm_resi_full = lmm_resi_full, 
@@ -358,5 +593,95 @@ temp = do.call(rbind, temp)
 saveRDS(temp, "Results/ABCD_CS_L_analysis/FC_results_bl_and_full_data_analyses.rds")
 ```
 
+### Separating between- and within-subject effects
 
+```{r}
+var_info <- readRDS("data/analysis_data/ABCD_FC_combat/var_info.rds")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+ROI_outcomes = c(# ROI Vol
+                 paste0("lh_Vol_", ROI_dict$var_names),
+                 paste0("rh_Vol_", ROI_dict$var_names),
+                 # CT
+                 paste0("lh_CT_", ROI_dict$var_names),
+                 paste0("rh_CT_", ROI_dict$var_names))
+
+
+var_list = c(
+            # NIH-TB
+            "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+            "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+            "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+            "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+            "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+            "nihtbx_cryst_fc", # Crystallized Composite
+            # CBCL:
+             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
+            # birthweight,
+            # "bw",
+            # BMI
+            "BMI"
+            # # Handedness
+            # "handedness_impute"
+            )
+
+# x = var_list[1]
+
+temp = pbmclapply(var_list, FUN = function(x){
+                  cat("X = ", x, "\n")
+                  dat_x = readRDS(paste0("data/analysis_data/ABCD_FC_combat/FC_data_", x, "_combat.rds")) 
+                  dat_x = na.omit(dat_x)
+                  
+                  outcomes = dat_x %>% select(starts_with("L_"), starts_with("R_")) %>% colnames()
+                  output = NULL
+                  # y = outcomes[1]
+                  for (y in outcomes){
+                    # CS analysis
+                    data_bl = subset(dat_x, eventname == "baseline_year_1_arm_1")
+                    fit_bl = eval(parse(text = paste0("glm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ns(mean_FD, df = 3) + ", x , ", weights = frame_count, data = data_bl)")))
+                    resi_obj_bl = fit_bl %>% resi_pe(data = data_bl, overall = FALSE) %>% suppressWarnings()
+                    resi_bl = resi_obj_bl$anova[x, "RESI"]
+                    p_val_bl = resi_obj_bl$anova[x, "Pr(>Chisq)"]
+                    beta_bl = NA
+                    beta_se_bl = NA
+                    
+                    ## Longitudinal analysis
+                    ## 1. GEE
+                    dat_x %<>%  arrange(temp_id, age_years) %>% group_by(temp_id) %>% mutate(miss_bl = !("baseline_year_1_arm_1" %in% eventname)) %>% 
+                      filter(!miss_bl) %>% 
+                      mutate(X = !!as.name(x), 
+                             X_bl = X[eventname == "baseline_year_1_arm_1"],
+                             X_change = X - X_bl) %>% ungroup()
+                    fit_full_gee = eval(parse(text = paste0("geeglm(formula = ", y, "~ sex_01 + ns(age_years, 2) + ns(mean_FD, df = 3) + X_change + X_bl, data = dat_x, corstr = 'exchangeable', weights = frame_count, id = temp_id)")))
+                    gee_resi_obj_full = fit_full_gee %>% resi_pe(data = dat_x, overall = FALSE, coefficients = FALSE)  %>% suppressWarnings()
+                    gee_resi_full = gee_resi_obj_full$anova["X_bl", "L-RESI"] 
+                    gee_p_val_full = gee_resi_obj_full$anova["X_bl", "P(>|Chi|)"]
+                    gee_beta_full = NA
+                    gee_beta_se_full = NA
+                    
+                    output = rbind(output,
+                                   data.frame(Y = y, X = x,
+                                              # baseline analysis
+                                              beta_bl = beta_bl, beta_se_bl = beta_se_bl, resi_bl = resi_bl,  
+                                              p_val_bl = p_val_bl, N_bl = nobs(fit_bl),
+                                            
+                                              # GEE w/ full data
+                                              gee_beta_full = gee_beta_full, gee_beta_se_full = gee_beta_se_full, gee_resi_full = gee_resi_full, 
+                                              gee_p_val_full = gee_p_val_full)
+                                   )
+                    
+                  }
+                  return(output)
+            
+  
+}
+, mc.cores = 8
+)
+
+  
+temp = do.call(rbind, temp)
+
+saveRDS(temp, "Results/ABCD_CS_L_analysis/between_subject_effects_CS_L_data_analysis_FC.rds")
+```
 

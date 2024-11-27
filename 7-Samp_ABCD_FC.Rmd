@@ -27,422 +27,9 @@ library(table1)
 
 ```
 
-# Data preparation
-
-```{r, eval = FALSE}
-
-# CURATES DATA FROM FILE NAMES
-# tenMin = list.files('/media/disk2/ABCD_release5/fcData', pattern = '.*10_minutes_of_data_at_FD_0.2.pconn.nii.gz', full.names=TRUE)
-# fiveMin = list.files('/media/disk2/ABCD_release5/fcData', pattern = '.*5_minutes_of_data_at_FD_0.2.pconn.nii.gz', full.names=TRUE)
-# allFrames = list.files('/media/disk2/ABCD_release5/fcData', pattern = '.*all_frames_at_FD_0.2.pconn.nii.gz', full.names=TRUE)
-# matfiles = list.files('/media/disk2/ABCD_release5/fcData', pattern = '.*.mat', full.names = TRUE)
-# length(tenMin); length(fiveMin); length(allFrames)
-
-
-all = list.files('/media/disk2/ABCD_release5/fcData', pattern = '.*FD_0.2.pconn.nii.gz', full.names=TRUE)
-terms = do.call(rbind, strsplit(basename(all), "-"))[,-c(1,4,5)]
-colnames(terms) = c('id', 'visit', 'info')
-data = as.data.frame(terms)
-data$img = all
-data$length = sapply(strsplit(data$info, "_"), function(x) x[3])
-
-
-# get the motion metric & frame count
-library(R.matlab)
-temp = pbmclapply(1:nrow(data),
-                         function(x) {tryCatch({
-                           file.dir = paste0('/media/disk2/ABCD_release5/fcData/sub-', data$id[x], "-", data$visit[x], '-rest_desc-filtered_motion_mask.mat')
-                           matfile = readMat(file.dir)
-                           
-                           # mean frame displacement
-                           mean_FD = matfile$motion.data[[21]][[1]][9][[1]][1] 
-                           
-                           # frame count
-                           frame_count = NA
-                           if (data$length[x] == 5){
-                             frame_removal = matfile$motion.data[[21]][[1]][4] %>% unlist
-                             epi_TR = matfile$motion.data[[21]][[1]][2] %>% unlist
-                             frame_count = sum(1 - frame_removal[1:(5 * 60 / epi_TR)])
-                           }
-                           if (data$length[x] == 10){
-                             frame_removal = matfile$motion.data[[21]][[1]][4] %>% unlist
-                             epi_TR = matfile$motion.data[[21]][[1]][2] %>% unlist
-                             frame_count = sum(1 - frame_removal[1:(10 * 60 / epi_TR)])
-                           }
-                           if (data$length[x] == "all"){
-                             # = total remaining frame count
-                             frame_count = matfile$motion.data[[21]][[1]][7] %>% unlist
-                           }
-                           
-                           return(c(mean_FD = mean_FD, 
-                                    frame_count = frame_count))
-                         }, error = function(e) return(NA))
-                         },
-                  mc.cores = 40, mc.preschedule = TRUE
-                  )
-
-temp = do.call(rbind, temp)
-data = cbind(data, temp)
-
-
-# ClEAN
-## ID
-data$id = sapply(strsplit(data$id, "_"), function(x) x[1])
-## eventname
-data$eventname = NA
-data$eventname[data$visit == "2YearFollowUpYArm1_task" ] = "2_year_follow_up_y_arm_1"
-data$eventname[data$visit == "baselineYear1Arm1_task" ] = "baseline_year_1_arm_1"
-
-## use the longest scan available for each subject at each visit.
-data$length_recode = data$length
-data$length_recode[data$length == "all"] = 999
-data$length_recode %<>% as.numeric
-data %<>% group_by(id, eventname) %>% filter(length_recode == max(length_recode)) %>% arrange(id, eventname)
-
-# Boolean exclusion info
-
-QC <- read_csv("/media/disk2/ABCD_release5/fcData/demo_cog/abcd_imgincl01.csv")
-var_names = colnames(QC)
-QC <- read_csv("/media/disk2/ABCD_release5/fcData/demo_cog/abcd_imgincl01.csv", skip = 1)
-colnames(QC) = var_names
-
-
-QC = subset(QC, !is.na(visit))
-QC$id = stringr::str_remove(QC$src_subject_id, "_")
-
-QC %<>% select(id, eventname, imgincl_rsfmri_include)
-
-data %<>% arrange(id, eventname)
-QC %<>% arrange(id, eventname)
-
-data = merge(data, QC, all.x = TRUE)
-
-data = data %>% select(id, eventname, length, img, mean_FD, frame_count, imgincl_rsfmri_include)
-
-
-# COMBINE DEMO INFO
-demo_dat = readr::read_csv("data/analysis_data/ABCD_release5.csv")
-demo_dat %<>% select(src_subject_id, dx, eventname, starts_with("nihtbx"), BMI, sex_01, starts_with("cbcl"), ehi_y_ss_scoreb, age_years, site, bw)
-demo_dat$id = stringr::str_remove(demo_dat$src_subject_id, "_")
-demo_dat %<>% arrange(id, eventname)
-data = merge(data, demo_dat, by = c("id", "eventname"), all.x = TRUE)
-
-data %<>% arrange(id, age_years)
-data$handedness_impute = data$ehi_y_ss_scoreb
-data <- data %>% group_by(id) %>% fill(handedness_impute, .direction = "down")
-
-data$handedness = factor(data$handedness_impute, levels = 1:3, labels = c("Right-handed", "Left-handed", "Mixed-handed"))
-
-# BMI: the values outside of the 1% lower and upper quantiles are considered mis-input and replaced with missing
-thres = quantile(data$BMI, probs = c(0.01, 0.99), na.rm = TRUE)
-data$BMI = ifelse(data$BMI < thres[1], NA, data$BMI)
-data$BMI = ifelse(data$BMI > thres[2], NA, data$BMI)
-
-
-# READING IN THE FC DATA
-library(RNifti)
-
-# load all the FC data
-
-# Gordon atlas
-node_list = read.delim("data/raw_data/gordon333NodeNames.txt")
-
-nodes = lapply(node_list[, 1],
-               function(x){
-                 paste(strsplit(x, '_')[[1]][1:2], collapse ='_')
-               }
-              ) %>% unlist
-
-
-FC_list = pbmclapply(1:nrow(data), function(x) {
-  tryCatch({
-    img = data$img[x]
-    out =  drop(readNifti(img))
-    colnames(out) = rownames(out) = c(nodes, rep("", 352 - length(nodes)))
-    out = out[!rownames(out) %in% c("L_", "L_None", "R_", "R_None", ""), !colnames(out) %in% c("L_", "L_None", "R_", "R_None", "")]
-    
-    # name matrix
-    names = matrix(NA, nrow = nrow(out), ncol = ncol(out))
-    for (i in 1:nrow(names)){
-        names[i, ] =  paste0(rownames(out)[i], "2", colnames(out))
-    }
-    out = out[lower.tri(out)]
-    names(out) = names[lower.tri(names)]
-    
-    # organize the regions connection names
-    name_clean = lapply(names(out), function(x) {
-      strsplit(x, "2") %>% unlist %>% sort %>% paste0(collapse = "2")
-    }) %>% unlist
-    
-    # average over the regions
-    temp = data.frame(FC = name_clean, Z = out)
-    temp = temp %>% group_by(FC) %>% summarise(mean_Z = mean(Z))
-    
-    rv = temp$mean_Z
-    names(rv) = temp$FC
-    return(rv)
-  },
-  error=function(x){rep(NA, 12 * 11/2 + 12) }) 
-}, mc.cores = 40, mc.preschedule = TRUE )
-  
-FC = do.call(rbind, FC_list)
-
-data = cbind(data, FC) 
-
-data = subset(data, !is.na(data$`R_Visual2R_Visual`))
-
-# generate a temp numeric ID
-data %<>% group_by(id) %>% mutate(temp_id = cur_group_id())
-
-data = subset(data, site != "site13")
-
-write.csv(data, "data/analysis_data/ABCD_FC.csv")
-
-```
-
-
-## Descriptive table
-```{r , eval = FALSE}
-data = read_csv("data/analysis_data/ABCD_FC.csv")
-
-my.render.cont <- function(x) {
-    with(stats.default(x), 
-         c("",
-           
-          "Mean (SD)" = sprintf("%s (%s)",
-                                round_pad(MEAN, 1),
-                                round_pad(SD, 1)),
-         
-          "Median (Min, Max)" = sprintf("%s (%s, %s)",
-                                       round_pad(MEDIAN, 1), 
-                                       round_pad(MIN, 1), 
-                                       round_pad(MAX, 1)),
-          "N" = sprintf("%s",
-                        N))
-    )
-}
-
-data$eventname %<>% factor(levels = c("baseline_year_1_arm_1", "2_year_follow_up_y_arm_1"), labels = c("Baseline", "2-year follow-up"))
-
-
-label(data$nihtbx_picvocab_fc) = "Picture Vocabulary Test"
-label(data$nihtbx_flanker_fc) = "Flanker Inhibitory Control and Attention Test"
-label(data$nihtbx_list_fc) = "List Sorting Working Memory Test"
-label(data$nihtbx_cardsort_fc) = "Dimensional Change Card Sort Test"
-label(data$nihtbx_pattern_fc) = "Pattern Comparison Processing Speed Test"
-label(data$nihtbx_picture_fc) = "Picture Sequence Memory Test"
-label(data$nihtbx_reading_fc) = "Oral Reading Recognition Test"
-label(data$nihtbx_fluidcomp_fc) = "Cognition Fluid Composite"
-label(data$nihtbx_cryst_fc) = "Crystallized Composite"
-label(data$nihtbx_totalcomp_fc) = "Cognition Total Composite Score"
-
-label(data$cbcl_scr_syn_totprob_t) = "Total Problem CBCL Syndrome Scale"
-
-
-# var_list = c("cbcl_scr_syn_anxdep_t", # Anxious/Depressed CBCL Syndrome Scale
-#              "cbcl_scr_syn_withdep_t", # WithDep (withdrawn or depression??)
-#              "cbcl_scr_syn_somatic_t", # Somatic CBCL Syndrome Scale (t-score)
-#              "cbcl_scr_syn_social_t", # Social CBCL Syndrome Scale (t-score)
-#              "cbcl_scr_syn_thought_t", # Thought CBCL Syndrome Scale (t-score)
-#              "cbcl_scr_syn_attention_t", # attention
-#              "cbcl_scr_syn_rulebreak_t", # rule-breaking
-#              "cbcl_scr_syn_aggressive_t", # aggressive
-#              "cbcl_scr_syn_internal_t", # internal
-#              "cbcl_scr_syn_external_t", # external
-#              "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
-#              
-#              "cbcl_scr_dsm5_depress_t", # depress
-#              "cbcl_scr_dsm5_anxdisord_t", # anxious/disorder??
-#              "cbcl_scr_dsm5_somaticpr_t", # SomaticPr CBCL DSM5 Scale (t-score)
-#              "cbcl_scr_dsm5_adhd_t", # ADHD CBCL DSM5 Scale (t-score)
-#              "cbcl_scr_dsm5_opposit_t", # Opposit CBCL DSM5 Scale (t-score)
-#              "cbcl_scr_dsm5_conduct_t", # Conduct CBCL DSM5 Scale (t-score)
-#              "cbcl_scr_07_sct_t",  # Sluggish Cognitive Tempo (SCT) CBCL Scale2007 Scale (t-score)
-#              "cbcl_scr_07_ocd_t", # Obsessive-Compulsive Problems (OCD) CBCL Scale2007 Scale (t-score)
-#              "cbcl_scr_07_stress_t" # Stress CBCL Scale2007 Scale (t-score)
-#              )
-
-
-
-label(data$bw) = "Birth Weight"
-label(data$BMI) = "BMI"
-label(data$handedness_impute) = "Handedness"
-
-table1(~ nihtbx_picvocab_fc + nihtbx_flanker_fc + nihtbx_list_fc + nihtbx_list_fc + nihtbx_cardsort_fc + nihtbx_pattern_fc + nihtbx_picture_fc + nihtbx_reading_fc + nihtbx_fluidcomp_fc + nihtbx_cryst_fc + nihtbx_totalcomp_fc + 
-         cbcl_scr_syn_totprob_t + cbcl_scr_syn_anxdep_t + cbcl_scr_syn_withdep_t + cbcl_scr_syn_somatic_t + cbcl_scr_syn_social_t + cbcl_scr_syn_thought_t + cbcl_scr_syn_attention_t + cbcl_scr_syn_rulebreak_t +  cbcl_scr_syn_aggressive_t + cbcl_scr_syn_internal_t + cbcl_scr_syn_external_t + 
-         cbcl_scr_dsm5_depress_t + cbcl_scr_dsm5_anxdisord_t + cbcl_scr_dsm5_somaticpr_t + cbcl_scr_dsm5_adhd_t + cbcl_scr_dsm5_opposit_t + cbcl_scr_dsm5_conduct_t + cbcl_scr_07_sct_t + 
-         cbcl_scr_07_ocd_t + cbcl_scr_07_stress_t +
-         bw + BMI + handedness_impute | eventname, data = data, reder = my.render.cont)
-```
-
-## Combat/LongCombat
-```{r, eval = FALSE}
-var_info <- readRDS("data/analysis_data/ABCD_other_covariate_combat/var_info.rds")
-var_info$design[var_info$var == "nihtbx_list_fc"] = "CS"
-var_info$var[var_info$var == "handedness"] = "handedness_impute"
-# add CBCL
-CBCL_df = data.frame(var = c("cbcl_scr_syn_anxdep_t", # Anxious/Depressed CBCL Syndrome Scale
-                             "cbcl_scr_syn_withdep_t", # WithDep (withdrawn or depression??)
-                             "cbcl_scr_syn_somatic_t", # Somatic CBCL Syndrome Scale (t-score)
-                             "cbcl_scr_syn_social_t", # Social CBCL Syndrome Scale (t-score)
-                             "cbcl_scr_syn_thought_t", # Thought CBCL Syndrome Scale (t-score)
-                             "cbcl_scr_syn_attention_t", # attention
-                             "cbcl_scr_syn_rulebreak_t", # rule-breaking
-                             "cbcl_scr_syn_aggressive_t", # aggressive
-                             "cbcl_scr_syn_internal_t", # internal
-                             "cbcl_scr_syn_external_t", # external
-                             "cbcl_scr_syn_totprob_t", # Total Problem CBCL Syndrome Scale
-                
-                             "cbcl_scr_dsm5_depress_t", # depress
-                             "cbcl_scr_dsm5_anxdisord_t", # anxious/disorder??
-                             "cbcl_scr_dsm5_somaticpr_t", # SomaticPr CBCL DSM5 Scale (t-score)
-                             "cbcl_scr_dsm5_adhd_t", # ADHD CBCL DSM5 Scale (t-score)
-                             "cbcl_scr_dsm5_opposit_t", # Opposit CBCL DSM5 Scale (t-score)
-                             "cbcl_scr_dsm5_conduct_t", # Conduct CBCL DSM5 Scale (t-score)
-                             "cbcl_scr_07_sct_t",  # Sluggish Cognitive Tempo (SCT) CBCL Scale2007 Scale (t-score)
-                             "cbcl_scr_07_ocd_t", # Obsessive-Compulsive Problems (OCD) CBCL Scale2007 Scale (t-score)
-                             "cbcl_scr_07_stress_t"),
-                     var_label = NA,
-                     design = "L"
-                     )
-var_info = rbind(var_info, CBCL_df)
-saveRDS(var_info, "data/analysis_data/ABCD_FC_combat/var_info.rds")
-```
-
-
-```{r, eval = FALSE}
-# LONGCOMBAT
-
-data = read_csv("data/analysis_data/ABCD_FC.csv")
-data = subset(data, site != "site13")
-
-# recode handedness: 0: right-handed; 1: not right-handed; 2: not right-handed
-data$handedness_impute = factor(data$handedness_impute, levels = 1:3, labels = c("Right-handed", "Not right-handed", "Not right-handed"))
-
-outcomes = data %>% ungroup() %>% select(starts_with("R_"), starts_with("L_")) %>% colnames()
-
-var_info <- readRDS("~/RESI/longitudinal/data_analysis/1st_revision/data/analysis_data/ABCD_FC_combat/var_info.rds")
-var_list = var_info$var[var_info$design == "L"]
-
-# var_list = c("BMI", "cbcl_scr_syn_anxdep_t", "cbcl_scr_syn_withdep_t" , "cbcl_scr_syn_somatic_t" , "cbcl_scr_syn_social_t" , "cbcl_scr_syn_thought_t",  "cbcl_scr_syn_attention_t", "cbcl_scr_syn_rulebreak_t",   "cbcl_scr_syn_aggressive_t", "cbcl_scr_syn_internal_t",  "cbcl_scr_syn_external_t", "cbcl_scr_syn_totprob_t",  "cbcl_scr_dsm5_depress_t", "cbcl_scr_dsm5_anxdisord_t", "cbcl_scr_dsm5_somaticpr_t", "cbcl_scr_dsm5_adhd_t", "cbcl_scr_dsm5_opposit_t", "cbcl_scr_dsm5_conduct_t",  "cbcl_scr_07_sct_t",  "cbcl_scr_07_ocd_t", "cbcl_scr_07_stress_t")
-
-
-temp = pbmclapply(var_list, function(x) {
-
-# for (x in var_info$var[var_info$design == "L"]){
-
-              # cat("- Covariate:", x, "\n")
-  
-              design_x = var_info$design[which(var_info$var == x)]
-              # cat("   - Design:", design_x, "\n")
-              
-              # get the data 
-              dat_x = data %>% ungroup %>% select(src_subject_id, temp_id, eventname, mean_FD, frame_count, age_years, sex_01, site, eval(x),
-                                     starts_with("R_"), starts_with("L_")
-                                  )
-              # data clean -----
-              ## remove rows missing values
-              dat_x = na.omit(dat_x)
-              ## remove subjects with one measurement
-              dat_x %<>% group_by(temp_id) %>% mutate(num_obs = length(temp_id)) %>% filter(num_obs == 2)
-              
-              # ---- Longitudinal: LongCombat & sampling weights ------
-              
-              # longComBat
-              cat("   - LongCombat...\n")
-              dat_x %<>% arrange(temp_id, age_years)
-              dat_x %<>% as.data.frame
-              # time0 = Sys.time()
-              combat_obj = longCombat::longCombat(idvar = "temp_id", 
-                                                 timevar = "age_years", 
-                                                 batchvar = "site", 
-                                                 features = c(outcomes),
-                                                 formula = paste0("ns(age_years, df = 2) + sex_01 + ns(mean_FD, df = 3) + ", x),
-                                                 ranef = "(1|temp_id)",
-                                                 data = dat_x,
-                                                 verbose = FALSE)   
-              # time1 = Sys.time()
-              # cat(time1 - time0)
-              
-              dat_x_combat = cbind(dat_x[, c("src_subject_id", "temp_id", "eventname", "mean_FD", "frame_count", "age_years", "sex_01", "site", x)],
-                                   combat_obj$data_combat[, -c(1:3)])
-              
-              saveRDS(dat_x_combat, paste0("data/analysis_data/ABCD_FC_combat/FC_data_", x, "_combat.rds"))
-}
-, mc.cores = 14)
-              
-```
-
-
-```{r, eval = FALSE}
-# COMBAT
-
-data = read_csv("data/analysis_data/ABCD_FC.csv")
-data = subset(data, site != "site13")
-
-# recode handedness: 0: right-handed; 1: not right-handed; 2: not right-handed
-data$handedness_impute = factor(data$handedness_impute, levels = 1:3, labels = c("Right-handed", "Not right-handed", "Not right-handed"))
-
-outcomes = data %>% ungroup() %>% select(starts_with("R_"), starts_with("L_")) %>% colnames()
-
-var_info <- readRDS("~/RESI/longitudinal/data_analysis/1st_revision/data/analysis_data/ABCD_FC_combat/var_info.rds")
-var_list = var_info$var[var_info$design == "CS"]
-
-
-for (x in var_list){
-
-  cat("- Covariate:", x, "\n")
-  
-  design_x = var_info$design[which(var_info$var == x)]
-  cat("   - Design:", design_x, "\n")
-  
-  # get the data 
-  dat_x = data %>% ungroup %>% select(src_subject_id, temp_id, eventname, mean_FD, frame_count, age_years, sex_01, site, eval(x),
-                                     starts_with("R_"), starts_with("L_")
-                                  )
-  # data clean -----
-  ## remove rows missing values
-  dat_x = na.omit(dat_x)
-  
-  ## if "CS" NIH-TB measure: only keep the baseline records
-  dat_x = subset(dat_x, eventname == "baseline_year_1_arm_1")
-
-  # ------- CS: Combat & sampling weights & analysis ----------
-  
-  if (design_x == "CS"){
-    # ComBat -------
-    cat("   - Combat...\n")
-    dat_x %<>% arrange(temp_id)
-    dat_x %<>% as.data.frame
-    
-    combat_obj = neuroCombat::neuroCombat(dat = dat_x[, c(outcomes)] %>% t(), 
-                                        mod = eval(parse(text = paste0("model.matrix(~ ns(age_years, df = 2) + sex_01 +  ns(mean_FD, df = 3) + ", x , ", data = dat_x)"))),
-                                        batch = dat_x$site, eb = TRUE, mean.only = TRUE, verbose = TRUE)
-    dat_x_combat = cbind(dat_x[, c("src_subject_id", "temp_id", "eventname", "mean_FD", "frame_count", "age_years", "sex_01", "site", x)],
-                         t(combat_obj$dat.combat)
-                         )  
-    }    
-    
-  saveRDS(dat_x, paste0("data/analysis_data/ABCD_FC_combat/FC_data_", x, "_combat.rds"))
-
-}
-
-Sys.time()
-
-
-```
-
-
-
 # Longitudinal measures (except handedness)
 
 ```{r}
-# data_demo = dat_demo
-# data_FC = dat_FC
-# bl_scheme = 0
-# D_scheme = 0
-# samp_size = 500
-
 samp_func_long = function(data_demo, data_FC, bl_scheme, D_scheme, samp_size){
   
   # SAMPLING
@@ -610,7 +197,7 @@ samp_func_long = function(data_demo, data_FC, bl_scheme, D_scheme, samp_size){
 # ------- Sampling schemes ----------
 
 Ns = 500
-nsim = 100
+nsim = 1000
 
 # between-subject resampling scheme.
 
@@ -662,22 +249,18 @@ for (x in var_list[1:9]){ # exclude "handedness
   # remove baseline vs baseline
   dat_demo = subset(dat_demo, eventname != "baseline_year_1_arm_1")
   
-  # ggplot(dat_x, aes(x = D)) + geom_histogram()
-  
   # winsorizing
   ## baseline score
   thres = quantile(dat_demo[, paste0(x, "_bl")], probs = c(0.05, 0.95))
   dat_demo$bl_nihtb_winsor = dat_demo[, paste0(x, "_bl")]
   dat_demo$bl_nihtb_winsor = ifelse(dat_demo$bl_nihtb_winsor >= thres[2], thres[2], dat_demo$bl_nihtb_winsor)
   dat_demo$bl_nihtb_winsor = ifelse(dat_demo$bl_nihtb_winsor <= thres[1], thres[1], dat_demo$bl_nihtb_winsor)
-  # ggplot(dat_demo, aes(bl_nihtb_winsor)) + geom_histogram()
   ## change in score
   thres_D = quantile(dat_demo$D, probs = c(0.05, 0.95))
   dat_demo$D_nihtb_winsor = dat_demo$D
   dat_demo$D_nihtb_winsor = ifelse(dat_demo$D_nihtb_winsor >= thres_D[2], thres_D[2], dat_demo$D_nihtb_winsor)
   dat_demo$D_nihtb_winsor = ifelse(dat_demo$D_nihtb_winsor <= thres_D[1], thres_D[1], dat_demo$D_nihtb_winsor)
-  # ggplot(dat_demo, aes(D_nihtb_winsor)) + geom_histogram()
-  
+
   # derive the empirical bivariate density 
   dat_demo$freq = lapply(1:nrow(dat_demo), FUN = function(i){
     a = dat_demo$bl_nihtb_winsor[i]
@@ -685,8 +268,6 @@ for (x in var_list[1:9]){ # exclude "handedness
     d = sum(dat_demo$bl_nihtb_winsor >= a - 0.5 & dat_demo$bl_nihtb_winsor <= a + 0.5 & dat_demo$D_nihtb_winsor >= b - 0.5 & dat_demo$D_nihtb_winsor <= b + 0.5) / nrow(dat_demo)
     return(d)
   }) %>% unlist
-  # plot(dat_demo$nihtbx_picvocab_fc_bl, dat_demo$freq)
-  # plot(dat_demo$D, dat_demo$freq)
 
   # sampling weights --------
   # weights for uniform resampling
@@ -696,20 +277,16 @@ for (x in var_list[1:9]){ # exclude "handedness
   # U shape
   a = dat_demo$bl_nihtb_winsor - mean(range(dat_demo$bl_nihtb_winsor))
   dat_demo$bl_resamp_prob_U =  (a^2 + 0.05 * max(a^2) ) / (1.05*max(a^2 ))
-  # plot(dat_demo$bl_nihtb_winsor, dat_demo$bl_resamp_prob_U)
   # bell shape
   dat_demo$bl_resamp_prob_bell = - dat_demo$bl_resamp_prob_U + 1.05
-  # plot(dat_demo$bl_nihtb_winsor, dat_demo$bl_resamp_prob_bell)
-  
+
   # Target dist for change in cognitive measures
   # U shape
   a = dat_demo$D_nihtb_winsor - mean(range(dat_demo$D_nihtb_winsor))
   dat_demo$D_resamp_prob_U =  (a^2 + 0.05 * max(a^2) ) / (1.05*max(a^2 ))
-  # plot(dat_demo$D_nihtb_winsor, dat_demo$D_resamp_prob_U)
   # bell shape
   dat_demo$D_resamp_prob_bell = - dat_demo$D_resamp_prob_U + 1.05
-  # plot(dat_demo$D_nihtb_winsor, dat_demo$D_resamp_prob_bell)
-  
+
   # bootstrapping----------
   output = NULL
   
@@ -1165,14 +742,12 @@ samp_func_CS = function(data, bl_scheme, samp_size){
 
 
 # ------- Sampling schemes ----------
-
-
 var_info <- readRDS("data/analysis_data/ABCD_FC_combat/var_info.rds")
 
 var_list = var_info$var[var_info$design == "CS"]
 
 Ns = 500
-nsim = 100
+nsim = 1000
 
 Sys.time()
 set.seed(2023)
@@ -1295,7 +870,6 @@ for (x in var_list){
   
   } # for "N"
   saveRDS(output, paste0("Results/ABCD_samp_other_covariate_FC/samp_", x, ".rds"))
-
 }
 
 Sys.time()

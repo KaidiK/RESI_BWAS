@@ -123,20 +123,6 @@ meta_resi = function(ES, variable = "age", wls = TRUE, figure = TRUE){
 ```{r}
 # Function for summarizing the study-wise RESI results into a table (one table for each outcome)
 
-## the outcomes
-# outcome = c(# ROI Vol
-#                  paste0("lh_Vol_", ROI_dict$var_names),
-#                  paste0("rh_Vol_", ROI_dict$var_names),
-#                  # CT
-#                  paste0("lh_CT_", ROI_dict$var_names),
-#                  paste0("rh_CT_", ROI_dict$var_names))
-# 
-# 
-# y  = outcome[1]
-# study_info = study_info_clean
-
-
-
 ES_tab = function(study_info, y){
   # prepare plotting data
   ES = study_info

@@ -1,0 +1,239 @@
+---
+title: "8 - R1: Estimate and compare the cross-sectional and longitudinal effects in ABCD"
+author: "Kaidi Kang"
+date: "2023-09-20"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(readr)
+library(cowplot) # for plot_grid & get_legend
+library(pbmcapply)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(RESI)
+library(geepack)
+library(splines)
+library(table1)
+library(multcomp)
+library(tidyr)
+```
+
+
+# Summary
+
+To evaluate the cross-sectional and longitudinal effect of different covariates on different outcomes to help us understand & interpret the different effects of the sampling schemes.
+
+## Total GMV vs age in ADNI
+```{r}
+data <- readr::read_csv("data/analysis_data/whole_brain_measure/new/analysis_data_whole_brain_combat.csv")
+ADNI = subset(data, study == "ADNI")
+
+# calculate the subject-specific mean age across all within-subject measurements
+ADNI %<>% group_by(participant) %>% mutate(age_mean = mean(age_years),
+                                           age_bl = min(age_years),
+                                           age_D_bl = age_years - age_bl,
+                                           age_D_mean = age_years - age_mean)
+
+fit = geeglm(GMV_10000_combat ~ sex_01 + age_mean + age_D_mean, id = participant, corstr = "exchangeable", data = ADNI)
+resi_obj = fit %>% resi_pe
+resi_obj$coefficients
+
+# the estimates are pretty close
+```
+
+# The CS and L effect on total GMV
+
+```{r}
+var_list = c( # NIH-TB
+              "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+              "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+              "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+              "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+              "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+              "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+              "nihtbx_cryst_fc",
+              # BMI & CBCL
+              "BMI", "cbcl_scr_syn_totprob_t")
+set.seed(2023)
+tab = NULL
+# x = var_list[1]
+temp = pbmclapply(var_list, 
+                  FUN = function(x){
+                    data =  readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+                    # remove the subjects without baselines
+                    data %<>% group_by(temp_id) %>% filter("Baseline" %in% unique(eventname))
+                    data %<>%  arrange(temp_id, age_years) %>% group_by(temp_id) %>% mutate(visit = 1:n(),
+                                                               X = !!as.name(x),
+                                                               X_bl = X[eventname == "Baseline"],
+                                                               X_change = X - X_bl) %>% ungroup()
+                      
+                    fit = geeglm(GMV_10000_combat ~ ns(age_years, df = 2) + sex_01 + X_bl + X_change, id = temp_id, corstr = "exchangeable", data = data)
+                    
+                    temp = glht(fit, linfct = matrix(c(0, 0, 0, 0, 1, -1), nrow = 1)) %>% summary
+                    
+                    rho = summary(fit)$corr$Estimate
+
+                    resi_obj = resi_pe(fit, data = data)
+                        
+                    output = data.frame(Y = "GMV_10000_combat", X = x, 
+                                        beta_CS = fit$coefficients["X_bl"],
+                                        beta_CS_se = summary(fit)$coefficients["X_bl", "Std.err"],
+                                        CS_effect = resi_obj$coefficients["X_bl", "L-RESI"],
+                                        beta_L = fit$coefficients["X_change"],
+                                        beta_L_se = summary(fit)$coefficients["X_change", "Std.err"],
+                                        L_effect = resi_obj$coefficients["X_change", "L-RESI"],
+                                        rho = rho,
+                                        equal_p_val = temp$test$pvalues)
+                    return(output)
+                  }
+                  , mc.cores = 9
+              )
+  
+tab_GMV = do.call(rbind, temp)
+saveRDS(tab_GMV, "Results/CS_and_L_effects/GMV_nonbrain_covaraites_CS_L_effect_estimates.rds")
+
+```
+
+# The CS and L effects on regional GMV outcomes
+```{r}
+set.seed(2023)
+var_list = c( # NIH-TB
+              "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+              "nihtbx_list_fc", # List Sorting Working Memory Test Age 7+ v2.0
+              "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+              "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+              "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+              "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+              "nihtbx_cryst_fc",
+              # BMI & CBCL
+              "BMI", "cbcl_scr_syn_totprob_t")
+
+ROI_dict <- read_csv("data/analysis_data/ROI/ROI_dict_DKparcellation.csv")
+ROI_dict %<>% as.data.frame
+outcomes = c(# ROI Vol
+             paste0("lh_Vol_", ROI_dict$var_names, "_combat"),
+             paste0("rh_Vol_", ROI_dict$var_names, "_combat"))
+
+tab = NULL
+x = var_list[1]
+temp = pbmclapply(var_list, 
+                  FUN = function(x){
+                      # cat("X = ", x, "\n")
+                      data =  readRDS(paste0("data/analysis_data/ABCD_other_covariate_combat/data_", x, "_combat.rds"))
+                      # remove the subjects without baselines
+                      data %<>% group_by(temp_id) %>% filter("Baseline" %in% unique(eventname))
+                      data %<>%  arrange(temp_id, age_years) %>% group_by(temp_id) %>% mutate(visit = 1:n(),
+                                                                 X = !!as.name(x),
+                                                                 X_bl = X[eventname == "Baseline"],
+                                                                 X_change = X - X_bl) %>% ungroup()
+                      # y = outcomes[2]
+                      for (y in outcomes){
+                        fit = eval(parse(text = paste0("geeglm(formula = ", y, "~ ns(age_years, df = 2) + sex_01 + X_bl + X_change, 
+                                                        data = data, id = temp_id, corstr = 'exchangeable')")))
+                        
+                        # testing whether the CS effect = L effect
+                        # C = c(0, 0, 0, 0, 0, 0, 0, 1, -1) 
+                        # beta_hat = fit$coefficients %>% as.matrix
+                        # cov_hat = vcov(fit)
+                        # W = C %*% beta_hat %*% t(beta_hat) %*% C / (C %*% cov_hat %*% C)
+                        # sqrt(W)
+                        temp = glht(fit, linfct = matrix(c(0, 0, 0, 0, 1, -1), nrow = 1)) %>% summary
+                        
+                        # fit_sum = summary(fit)
+                        resi_obj = resi_pe(fit, data = data)
+                        
+                        output = data.frame(Y = y, X = x, 
+                                            beta_CS = fit$coefficients["X_bl"],
+                                            CS_effect = resi_obj$coefficients["X_bl", "L-RESI"],
+                                            beta_L = fit$coefficients["X_change"],
+                                            L_effect = resi_obj$coefficients["X_change", "L-RESI"],
+                                            equal_p_val = temp$test$pvalues
+                                          )
+                        tab = rbind(tab, output)
+                      }
+                    return(tab)
+                  }
+                  , mc.cores = 9
+)
+  
+tab_ROI_GMV = do.call(rbind, temp)
+ 
+saveRDS(tab_ROI_GMV, "Results/CS_and_L_effects/ROI_GMV_nonbrain_covaraites_CS_L_effect_estimates.rds")
+```
+
+
+# The CS and L effects on FC outcomes
+
+```{r}
+library(multcomp)
+
+var_list = c( # NIH-TB
+              "nihtbx_cryst_fc",
+              "nihtbx_flanker_fc", # NIH Toolbox Flanker Inhibitory Control and Attention Test Ages 8-11 v2.0
+              "nihtbx_pattern_fc",  # Pattern Comparison Processing Speed Test Age 7
+              "nihtbx_picture_fc", # Picture Sequence Memory Test Age 8+ Form A
+              "nihtbx_reading_fc", # Oral Reading Recognition Test Age 3+
+              "nihtbx_picvocab_fc", # NIH Toolbox Picture Vocabulary Test Age 3+ v2.0
+              # BMI & CBCL
+              "BMI", "cbcl_scr_syn_totprob_t")
+
+tab = NULL
+x = var_list[1]
+temp = pbmclapply(var_list, 
+                  FUN = function(x){
+                      # cat("X = ", x, "\n")
+                      data =  readRDS(paste0("data/analysis_data/ABCD_FC_combat/FC_data_", x, "_combat.rds"))
+                      # remove the subjects without baselines
+                      data %<>% group_by(temp_id) %>% filter("baseline_year_1_arm_1" %in% unique(eventname))
+                      data %<>%  arrange(temp_id, age_years) %>% group_by(temp_id) %>% mutate(visit = 1:n(),
+                                                                 X = !!as.name(x),
+                                                                 X_bl = X[eventname == "baseline_year_1_arm_1"],
+                                                                 X_change = X - X_bl) %>% ungroup()
+                      
+                      outcomes = data %>% dplyr::select(starts_with("L_"), starts_with("R_")) %>% colnames()
+                      # y = outcomes[2]
+                      for (y in outcomes){
+                        fit = eval(parse(text = paste0("geeglm(formula = ", y, "~ ns(age_years, df = 2) + sex_01 + ns(mean_FD, df = 3) + X_bl + X_change, 
+                                                        weights = frame_count,
+                                                        data = data, id = temp_id, corstr = 'exchangeable')")))
+                        
+                        # testing whether the CS effect = L effect
+                        # C = c(0, 0, 0, 0, 0, 0, 0, 1, -1) 
+                        # beta_hat = fit$coefficients %>% as.matrix
+                        # cov_hat = vcov(fit)
+                        # W = C %*% beta_hat %*% t(beta_hat) %*% C / (C %*% cov_hat %*% C)
+                        # sqrt(W)
+                        temp = glht(fit, linfct = matrix(c(0, 0, 0, 0, 0, 0, 0, 1, -1), nrow = 1)) %>% summary
+                        
+                        # fit_sum = summary(fit)
+                        resi_obj = resi_pe(fit, data = data)
+                        
+                        output = data.frame(Y = y, X = x, 
+                                            beta_CS = fit$coefficients["X_bl"],
+                                            CS_effect = resi_obj$coefficients["X_bl", "L-RESI"],
+                                            beta_L = fit$coefficients["X_change"],
+                                            L_effect = resi_obj$coefficients["X_change", "L-RESI"],
+                                            equal_p_val = temp$test$pvalues
+                                          )
+                        tab = rbind(tab, output)
+                      }
+                    return(tab)
+                  }
+                  , mc.cores = 9
+)
+  
+tab_FC = do.call(rbind, temp)
+ 
+saveRDS(tab_FC, "Results/CS_and_L_effects/FC_nonbrain_covaraites_CS_L_effect_estimates.rds")
+```
+
+

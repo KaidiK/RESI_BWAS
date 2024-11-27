@@ -226,9 +226,8 @@ for (a in outcomes){
 
 }
     
-  
 Sys.time()
-# it took about 6 hrs.
+
 ```
 
 

@@ -89,15 +89,6 @@ ROI_outcomes = c(# ROI Vol
                  paste0("lh_CT_", ROI_dict$var_names),
                  paste0("rh_CT_", ROI_dict$var_names))
 
-# No need to focus on CN subjects
-# dat = subset(dat, dx == "CN")
-
-# Restrict to the records that have at least 1 non-missing NIHTBX cognitive measures
-## num of missing cognitive masures
-# nihtbx_list = colnames(dat)[grep('nihtbx', colnames(dat))]
-# dat$num_miss = is.na(dat[, nihtbx_list]) %>% rowSums()
-# dat = subset(dat, num_miss < length(nihtbx_list))
-
 # remove the records with missing age and/or sex:
 dat = subset(dat, !is.na(age_years))
 dat = subset(dat, !is.na(sex_01))
@@ -670,7 +661,7 @@ samp_func_long = function(data, bl_scheme, D_scheme, samp_size){
 # ------- Sampling schemes ----------
 
 Ns = 500
-nsim = 100
+nsim = 1000
 
 Sys.time()
 set.seed(2023)
@@ -721,7 +712,7 @@ for (x in var_list){
   
   # between-subject resampling scheme.
   bl_schemes = c(1:2) # 0= uniform; 1 = U shaped (larger var); 2 = bell-shaped (smaller var)
-  D_schemes = c(1:2)
+  D_schemes = c(1:2) 
   num.cores = 30
   
   if (x %in% c("bw")) D_schemes = 999 # for this variable and "handedness", we only apply baseline sampling
@@ -793,7 +784,7 @@ for (x in var_list){
   a = dat_x$D_nihtb_winsor - mean(range(dat_x$D_nihtb_winsor))
   dat_x$D_resamp_prob_U =  (a^2 + 0.05 * max(a^2) ) / (1.05*max(a^2 ))
   # plot(dat_x$D_nihtb_winsor, dat_x$D_resamp_prob_U)
-  # bell shape
+  # Bell shape
   dat_x$D_resamp_prob_bell = - dat_x$D_resamp_prob_U + 1.05
   # plot(dat_x$D_nihtb_winsor, dat_x$D_resamp_prob_bell)
   

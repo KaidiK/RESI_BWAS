@@ -61,11 +61,6 @@ ADNI_bl = subset(ADNI, visit == 1)
 ADNI_bl$age_bl_winsor = ADNI_bl$age_bl
 ADNI_bl$age_bl_winsor = ifelse(ADNI_bl$age_bl >= 85, 85, ADNI_bl$age_bl)
 ADNI_bl$age_bl_winsor = ifelse(ADNI_bl$age_bl <= 65, 65, ADNI_bl$age_bl_winsor)
-
-# ggplot(data = subset(ADNI_fu, visit == 2), aes(x = age_bl_winsor)) + geom_histogram()
-
-
-
 ADNI_bl %<>% arrange(participant, visit)
 
 # derive the empirical bivariate density for each D and baseline combination
@@ -79,22 +74,8 @@ ADNI_bl$freq = lapply(1:nrow(ADNI_bl), FUN = function(x){
   return(d)
 }) %>% unlist
 
-
-# plot(ADNI_fu$age_bl, ADNI_fu$freq)
-# plot(ADNI_fu$D_age, ADNI_fu$freq)
-
 # weight for uniform resampling
 ADNI_bl$resamp_prob_flat = 1 / ADNI_bl$freq
-
-
-# # Target distribution for baseline age
-# # U shape
-# ADNI_bl$bl_resamp_prob_U =  (ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2 / max((ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2)
-# # plot(ADNI_fu$age_bl_winsor, ADNI_fu$bl_resamp_prob_U)
-# # bell shape
-# ADNI_bl$bl_resamp_prob_bell =   ( 1 - (ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2 / max((ADNI_bl$age_bl_winsor - mean(range(ADNI_bl$age_bl_winsor)))^2) )
-# # plot(ADNI_fu$age_bl_winsor, ADNI_fu$bl_resamp_prob_bell)
-
 
 # sampling function
 
@@ -107,11 +88,6 @@ resamp_ADNI_1obs = function(data_bl, samp_size, bl_scheme = 0){
   boot_data$temp_id = 1:nrow(boot_data)
   boot_data %<>% arrange(temp_id)
 
-  # dist of baseline age
-  # ggplot(data = subset(boot_data, visit == 1), aes(x = age_bl)) + geom_histogram()
-  # # dist of D(age)
-  # ggplot(data = subset(boot_data, visit != 1), aes(x = D_age)) + geom_histogram()
-  # 
   # ANALYSIS
   ## mean of baseline age
   mean_bl_age = boot_data$age_years[boot_data$visit == 1] %>% mean()
@@ -248,10 +224,6 @@ ADNI_fu_expand$freq = lapply(1:nrow(ADNI_fu_expand), FUN = function(x){
   return(d)
 }) %>% unlist
 
-
-# plot(ADNI_fu$age_bl, ADNI_fu$freq)
-# plot(ADNI_fu$D_age, ADNI_fu$freq)
-
 # weight for uniform resampling
 ADNI_fu_expand$resamp_prob_flat = 1 / ADNI_fu_expand$freq
 
@@ -292,11 +264,6 @@ resamp_ADNI_3obs = function(data_fu, data_bl, samp_size, bl_scheme = 0, D_scheme
   boot_data = do.call(rbind, boot_data)
   boot_data %<>% arrange(temp_id, age_years)
 
-  # dist of baseline age
-  # ggplot(data = subset(boot_data, visit == 1), aes(x = age_bl)) + geom_histogram()
-  # # dist of D(age)
-  # ggplot(data = subset(boot_data, visit != 1), aes(x = D_age)) + geom_histogram()
-  # 
   # ANALYSIS
   ## mean of baseline age
   mean_bl_age = boot_data$age_years[boot_data$visit == 1] %>% mean()
@@ -407,7 +374,6 @@ ADNI_fu = subset(ADNI, visit != 1)
 ADNI_fu$age_bl_winsor = ADNI_fu$age_bl
 ADNI_fu$age_bl_winsor = ifelse(ADNI_fu$age_bl >= 85, 85, ADNI_fu$age_bl)
 ADNI_fu$age_bl_winsor = ifelse(ADNI_fu$age_bl <= 65, 65, ADNI_fu$age_bl_winsor)
-# ggplot(data = subset(ADNI_fu, visit == 2), aes(x = age_bl_winsor)) + geom_histogram()
 ADNI_fu$D_age_winsor = ADNI_fu$D_age
 ADNI_fu$D_age_winsor = ifelse(ADNI_fu$D_age >= 5, 5, ADNI_fu$D_age)
 
@@ -451,9 +417,6 @@ ADNI_fu_expand$freq = lapply(1:nrow(ADNI_fu_expand), FUN = function(x){
             ADNI_fu_expand$D_age_winsor_3 >= b3 - 0.5 & ADNI_fu_expand$D_age_winsor_3 <= b3 + 0.5) / nrow(ADNI_fu_expand)
   return(d)
 }) %>% unlist
-
-# plot(ADNI_fu$age_bl, ADNI_fu$freq)
-# plot(ADNI_fu$D_age, ADNI_fu$freq)
 
 # weight for uniform resampling
 ADNI_fu_expand$resamp_prob_flat = 1 / ADNI_fu_expand$freq
@@ -511,11 +474,6 @@ resamp_ADNI_4obs = function(data_fu, data_bl, samp_size, bl_scheme = 0, D_scheme
   boot_data = do.call(rbind, boot_data)
   boot_data %<>% arrange(temp_id, age_years)
 
-  # # dist of baseline age
-  # ggplot(data = subset(boot_data, visit == 1), aes(x = age_bl)) + geom_histogram()
-  # # dist of D(age)
-  # ggplot(data = subset(boot_data, visit != 1), aes(x = D_age)) + geom_histogram()
-  
   # ANALYSIS
   ## mean of baseline age
   mean_bl_age = boot_data$age_years[boot_data$visit == 1] %>% mean()
